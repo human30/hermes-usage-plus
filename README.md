@@ -11,16 +11,57 @@ Hermes용 사용량·계정 한도 플러그인. 코어 수정 없이 웹 Dashbo
 - 서비스가 반환한 계정 quota windows, reset time 및 credit 정보
 - 공식 가격 자동 수집과 source별 정상 확인 시각, 갱신 오류, 가격 적용 범위
 
-## 설치
+## Install from Git — 권장 설치 방법
 
-Hermes의 Python 환경에서 실행합니다. 소스를 활성 프로필의 `plugins/usage-plus` 폴더에 둡니다.
+**Hermes Desktop → Capabilities → Plugins → Install from Git**에 아래 주소를 붙여 넣으세요.
 
-```powershell
-hermes plugins doctor usage-plus
-hermes plugins enable usage-plus
+```text
+https://github.com/human30/hermes-usage-plus.git
 ```
 
-웹 Dashboard를 새로고침하면 기존 Usage/Analytics 페이지의 상단과 Usage+ 탭에 표시됩니다. Desktop은 **Capabilities → Plugins → Usage+**를 켜세요. 통합 패키지의 Desktop UI는 별도 opt-in입니다. 전체 앱이나 gateway 재시작은 필요하지 않습니다.
+이 저장소는 **Agent + Desktop 통합 패키지**입니다. 별도 빌드나 파일 복사가 필요하지 않습니다. Windows Hermes Desktop v0.22.2에서 화면과 실제 backend 조회를 확인했습니다.
+
+1. 설치 대화상자가 저장소를 검사할 때까지 기다립니다.
+2. **Agent와 Desktop을 모두 선택**하고, Agent를 설치할 연결·프로필이 맞는지 확인합니다.
+3. 설치 후 활성화 옵션을 선택하고 설치를 승인합니다.
+4. 설치 후 **Capabilities → Plugins → Filters → Installed**에서 `usage`를 검색합니다. 공식 온라인 카탈로그에는 등록되지 않았으므로 **Installed** 목록에서 찾으세요.
+5. **Usage+ 카드의 제목을 눌러 상세 화면**을 엽니다. **`Agent: Usage+`와 `Desktop: Usage+`를 각각 ON**으로 확인합니다.
+6. 왼쪽 사이드바의 **Usage+**를 엽니다. 7일·30일·90일 선택과 새로고침을 사용할 수 있습니다.
+
+> **중요:** 바깥 Usage+ 카드의 스위치가 ON이어도 상세 화면의 Desktop 스위치는 OFF일 수 있습니다. 메뉴가 안 보일 때는 재설치보다 **`Desktop: Usage+`**부터 확인하세요. 두 스위치는 서로 다른 실행 부분을 제어합니다.
+
+### 비공개 저장소 인증
+
+현재 저장소는 **비공개**입니다. 저장소 접근 권한이 있는 GitHub 계정의 인증이 설치를 수행하는 기기에 필요합니다. 로그인되지 않은 기기에서는 `Repository not found` 또는 인증 오류가 날 수 있습니다.
+
+GitHub CLI를 사용하는 경우 해당 기기의 터미널에서:
+
+```powershell
+gh auth login
+gh auth setup-git
+git ls-remote https://github.com/human30/hermes-usage-plus.git HEAD
+```
+
+마지막 명령이 commit SHA를 반환한 뒤 Install from Git을 다시 실행하세요. 인증은 GitHub의 로그인 절차로 진행하며 토큰을 저장소 URL이나 채팅에 붙여 넣지 마세요. 원격 backend를 사용하는 경우 **Desktop 기기와 Agent 서버 각각**의 인증을 확인해야 합니다.
+
+### 다른 PC / Mac에서 원격 Windows backend에 연결하는 경우
+
+- **Agent**는 데이터가 있는 gateway 서버·프로필에 설치합니다.
+- **Desktop**은 지금 화면을 여는 각 기기에 설치합니다.
+- Windows 서버에 Agent가 이미 설치되어 있다면 다른 기기의 Install from Git에서는 **Desktop만 선택**할 수 있습니다. 기존 Agent를 강제로 덮어쓸 필요가 없습니다.
+- 다른 기기에서도 상세 화면의 Desktop 스위치를 켜야 합니다. 화면 파일만 설치하고 Agent backend가 없거나 꺼져 있으면 조회할 수 없습니다.
+- 가격 갱신 예약 작업은 **Agent 서버에서 별도로 설정**합니다. Git 설치만으로 Windows 예약 작업을 자동 등록하지 않습니다.
+
+### CLI로 Agent 설치
+
+Hermes가 설치된 서버의 터미널에서 실행합니다. 이 명령만으로 다른 기기의 Desktop UI까지 설치되지는 않습니다.
+
+```powershell
+hermes plugins install https://github.com/human30/hermes-usage-plus.git --enable
+hermes plugins doctor usage-plus
+```
+
+웹 Dashboard는 새로고침하면 Usage/Analytics 상단과 Usage+ 탭에서 사용할 수 있습니다. Desktop 메뉴가 안 보이면 Plugins 화면의 **Rescan**을 누른 뒤 위의 두 스위치를 확인하세요. 플러그인 활성화는 앱/gateway 전체 재시작 없이 가능합니다.
 
 ## 공식 가격 자동 갱신 (Windows)
 
@@ -61,6 +102,8 @@ API handler는 async이며 SQL·계정 HTTP 요청은 별도 일회성 Python �
 이것은 OS 보안 sandbox가 아닙니다. 메모리·CPU 고갈에 대한 하드 제한은 없으므로 장애 가능성 0을 보장하지 않습니다. 프로필의 전역 `plugins.isolation` 설정은 변경하지 않습니다.
 
 ## 검증
+
+GitHub 저장소를 대상으로 Hermes의 실제 `probePluginRepo`에서 **Agent + Desktop** 탐지를 확인했습니다. 별도 임시 디렉터리에 `installDesktopPluginFromGit`으로 Desktop을 설치하고 원본 UI 파일·통합 패키지 marker를 확인했으며, 격리된 `HERMES_HOME`에서 CLI Agent 신규 설치와 `hermes plugins doctor`도 통과했습니다. 이 설치 검증은 기존 운영 설정을 덮어쓰지 않습니다. 인증된 Windows 환경에서 검증했으며 다른 기기의 GitHub 인증이나 Mac 설치 완료를 의미하지는 않습니다.
 
 ```powershell
 python -m unittest discover -s ./tests -p 'test_*.py' -v
