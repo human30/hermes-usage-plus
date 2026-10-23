@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 class SummaryTests(unittest.TestCase):
     def test_cost_sum_requires_every_corresponding_cost_with_accepted_status(self):
         from usage_core import build_summary
-        with tempfile.TemporaryDirectory(dir=ROOT.parents[1] / 'cache' / 'scratch') as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             with sqlite3.connect(home / 'state.db') as con:
                 con.executescript('''
@@ -50,7 +50,7 @@ class SummaryTests(unittest.TestCase):
     def test_model_switch_auxiliary_and_canonical_cache_not_double_counted(self):
         self.assertIsNotNone(importlib.util.find_spec('usage_core'), 'usage_core implementation missing')
         from usage_core import build_summary
-        with tempfile.TemporaryDirectory(dir=ROOT.parents[1] / 'cache' / 'scratch') as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             con = sqlite3.connect(home / 'state.db')
             con.executescript('''
@@ -84,7 +84,7 @@ class SummaryTests(unittest.TestCase):
         from decimal import Decimal
         from types import SimpleNamespace
         from usage_core import build_summary
-        with tempfile.TemporaryDirectory(dir=ROOT.parents[1] / 'cache' / 'scratch') as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             con = sqlite3.connect(home / 'state.db')
             con.executescript('''

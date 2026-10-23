@@ -146,9 +146,13 @@ def _path(home):
 def _read(home):
     try:
         with _path(home).open('rb') as stream:
-            payload = stream.read(MAX_CACHE_BYTES + 1)
-        if len(payload) > MAX_CACHE_BYTES:
-            raise ValueError('cache_too_large')
+            # Read from the open handle's size, not the 16 MiB ceiling.
+            size = os.fstat(stream.fileno()).st_size
+            if size > MAX_CACHE_BYTES:
+                raise ValueError('cache_too_large')
+            payload = stream.read(size + 1)
+        if len(payload) != size:
+            raise ValueError('cache_changed')
         data = json.loads(payload)
         if (not isinstance(data, dict) or data.get('schema_version') != 1
                 or not isinstance(data.get('sources'), dict) or not isinstance(data.get('prices'), list)
@@ -608,7 +612,29 @@ def refresh_prices(home: Path, *, sources=None) -> dict:
     return result
 
 
+class PriceSnapshot:
+    """One validated catalog per request, shared by lookup and health reporting.
+
+    No process-global cache: a new request sees refreshed prices, while an
+    in-flight request cannot mix tariffs from two different file versions.
+    """
+
+    def __init__(self, home: Path):
+        self._data = _read(home)
+
+    def lookup_price(self, provider: str, model: str, *, native_only=False) -> SimpleNamespace | None:
+        return _lookup_price(self._data['prices'], provider, model, native_only=native_only)
+
+    def status(self) -> dict:
+        return _status(self._data)
+
+
 def lookup_price(home: Path, provider: str, model: str, *, native_only=False) -> SimpleNamespace | None:
+    """Fresh standalone lookup; reuse PriceSnapshot for a batch of models."""
+    return _lookup_price(_read(home)['prices'], provider, model, native_only=native_only)
+
+
+def _lookup_price(rows, provider: str, model: str, *, native_only=False) -> SimpleNamespace | None:
     """Exact route first, then the model owner's official cached API reference.
 
     Only explicit namespaces/transport wrappers are removed. Never trim dates,
@@ -623,7 +649,6 @@ def lookup_price(home: Path, provider: str, model: str, *, native_only=False) ->
         provider, route_model = prefix, rest
     reference_route = provider == 'opencode-go'
     provider = {'openai-codex': 'openai', 'opencode-go': 'opencode'}.get(provider, provider)
-    rows = _read(home)['prices']
     direct = next((r for r in rows if r['provider'] == provider and r['model'] == model), None)
     if direct is None:
         direct = next((r for r in rows if r['provider'] == provider and r['model'] == route_model), None)
@@ -676,7 +701,10 @@ def lookup_price(home: Path, provider: str, model: str, *, native_only=False) ->
 
 def status(home: Path) -> dict:
     """Cache-only freshness and per-source health; failure doesn't renew freshness."""
-    data = _read(home)
+    return _status(_read(home))
+
+
+def _status(data) -> dict:
     sources = {}
     now = time.time()
     for name, info in data['sources'].items():

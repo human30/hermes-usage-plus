@@ -39,7 +39,7 @@ def anthropic_page(*, input_cell='$3 / MTok', name='Claude Sonnet 4.5', headers=
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=ROOT.parents[1] / 'cache' / 'scratch')
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
 

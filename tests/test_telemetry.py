@@ -11,7 +11,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertIsNotNone(importlib.util.find_spec('telemetry'), 'timing recorder missing')
         from telemetry import make_record, save_record, read_timing
         import sqlite3
-        with tempfile.TemporaryDirectory(dir=ROOT.parents[1]/'cache'/'scratch') as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             payload = dict(api_request_id='r1', session_id='s', model='m', provider='p',
                 api_duration=2.0, started_at=1000, usage={'output_tokens':100},

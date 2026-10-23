@@ -15,7 +15,7 @@ sys.path.insert(0,str(ROOT))
 class RuntimeTests(unittest.TestCase):
     def test_worker_missing_database_returns_json_error_not_traceback(self):
         self.assertTrue((ROOT/'worker.py').exists(), 'worker entry missing')
-        with tempfile.TemporaryDirectory(dir=ROOT.parents[1]/'cache'/'scratch') as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             result=subprocess.run([sys.executable,str(ROOT/'worker.py'),'summary','--home',tmp],
                 capture_output=True,text=True,encoding='utf-8',timeout=20)
             self.assertEqual(result.returncode,0)

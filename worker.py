@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from functools import partial
 from pathlib import Path
 
 
@@ -20,13 +21,11 @@ def summary(home, days):
     from usage_core import build_summary, reference_price
     native_lookup = None
     try:
-        from pricing_catalog import lookup_price, status
-        def lookup(provider, model):
-            return lookup_price(home, provider, model)
-        def lookup_native(provider, model):
-            return lookup_price(home, provider, model, native_only=True)
-        native_lookup = lookup_native
-        pricing = status(home)
+        from pricing_catalog import PriceSnapshot
+        catalog = PriceSnapshot(home)
+        lookup = catalog.lookup_price
+        native_lookup = partial(catalog.lookup_price, native_only=True)
+        pricing = catalog.status()
     except ImportError:
         lookup = reference_price
         pricing = {'status':'unavailable', 'reason':'가격 자동 갱신 모듈이 없습니다.'}
