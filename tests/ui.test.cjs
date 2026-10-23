@@ -23,7 +23,7 @@ function loadDesktop(fetcher) {
   const contributions = [], options = [];
   const host = { state: { profile: atom('fixture-profile'), gateway: atom('open') } };
   const sdk = { host, gatewayActivationEpoch: () => host.epoch || 0, useValue: a => React.useSyncExternalStore(a.subscribe, a.get, a.get), useQuery: o => { options.push(o); return useQuery(o); }, ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav' };
-  const context = vm.createContext({ React, ...sdk, console, AbortController, setTimeout, clearTimeout, setInterval, clearInterval });
+  const context = vm.createContext({ React, ...sdk, console, URL, AbortController, setTimeout, clearTimeout, setInterval, clearInterval });
   const source = fs.readFileSync(path.join(base, 'desktop/plugin.js'), 'utf8').replace(/^import .*?;?\s*$/gm, '').replace('export default', 'globalThis.plugin =');
   vm.runInContext(source, context);
   context.plugin.register({ rest: fetcher, registerMany: c => contributions.push(...c) });
@@ -45,7 +45,7 @@ async function click(ui, label) { await act(async () => button(ui, label).click(
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 function loadDashboard(fetcher) {
   const registrations = [], slots = [], timers = new Map(); let id = 0;
-  const context = vm.createContext({ window: { __HERMES_PLUGIN_SDK__: { React, fetchJSON: fetcher }, __HERMES_PLUGINS__: { register: (...args) => registrations.push(args), registerSlot: (...args) => slots.push(args) } }, console, AbortController, setInterval: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearInterval: id => timers.delete(id), setTimeout, clearTimeout });
+  const context = vm.createContext({ window: { __HERMES_PLUGIN_SDK__: { React, fetchJSON: fetcher }, __HERMES_PLUGINS__: { register: (...args) => registrations.push(args), registerSlot: (...args) => slots.push(args) } }, console, URL, AbortController, setInterval: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearInterval: id => timers.delete(id), setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(path.join(base, 'dashboard/dist/index.js'), 'utf8'), context);
   return { Page: registrations[0]?.[1], registrations, slots, timers };
 }
@@ -61,9 +61,9 @@ test('dashboard adds its own page and analytics section, polls safely, and rende
     assert.equal(calls.length, 2);
     assert.ok(calls.every(c => c.url.startsWith('/api/plugins/usage-plus/')));
     assert.match(text(ui), /실제 청구.*\$0\.00/s); assert.match(text(ui), /API 환산.*미확인/s);
-    assert.match(text(ui), /공급자 미지원/); assert.match(text(ui), /working-provider/);
+    assert.doesNotMatch(text(ui), /공급자 미지원/); assert.match(text(ui), /working-provider/);
     const unsupported = [...ui.container.querySelectorAll('article')].find(a => a.textContent.includes('unsupported-provider'));
-    assert.doesNotMatch(unsupported.textContent, /잔여 0/);
+    assert.equal(unsupported, undefined);
     assert.match(text(ui), /캐시 쓰기/); assert.match(text(ui), /timing 표본 1/);
     assert.equal(ui.container.querySelector('img'), null);
     assert.deepEqual([...d.timers.values()].map(t => t.ms).sort((a,b) => a-b), [60000, 300000]);
@@ -74,7 +74,7 @@ test('dashboard adds its own page and analytics section, polls safely, and rende
   assert.equal(d.timers.size, 0);
 });
 
-test('dashboard loading, stale, transport error and per-account errors remain independently visible', async () => {
+test('dashboard retains global errors but hides failed account cards', async () => {
   let fail = false; const pending = deferred();
   const d = loadDashboard(async url => {
     if (url.includes('/summary')) { if (fail) throw new Error('테스트 연결 오류'); return pending.promise; }
@@ -82,7 +82,7 @@ test('dashboard loading, stale, transport error and per-account errors remain in
   });
   const ui = await mount(d.Page);
   try {
-    assert.match(text(ui), /불러오는 중/); assert.match(text(ui), /개별 조회 실패/); assert.match(text(ui), /working-provider/);
+    assert.match(text(ui), /불러오는 중/); assert.doesNotMatch(text(ui), /개별 조회 실패/); assert.match(text(ui), /working-provider/);
     await act(async () => { pending.resolve({ ...summary(), status: 'stale' }); }); await flush();
     assert.match(text(ui), /오래된 데이터/);
     fail = true; await click(ui, '새로고침');
@@ -151,7 +151,7 @@ test('both surfaces preserve known zero versus unknown money and label partial A
       assert.match(moneyCell, /^실제 청구 미확인API 환산 \$0\.00추정 비용 \(실제 청구 아님\) \$0\.00$/);
       assert.match(text(ui), /API 환산 부분 합계/); assert.match(text(ui), /가격 적용 1 \/ 2/);
       assert.match(text(ui), /적중률 0%/); assert.match(text(ui), /잔여 미확인/);
-      assert.match(text(ui), /fixture-snapshot/); assert.match(text(ui), /test-v1/);
+      assert.doesNotMatch(text(ui), /fixture-snapshot|test-v1/);
       assert.match(text(ui), /평균 미확인 tokens\/s/);
     } finally { await ui.close(); }
   }
@@ -169,6 +169,40 @@ test('both surfaces show daily official price freshness and source failures', as
       assert.match(text(ui), /마지막 정상 단가 유지/);
       assert.match(text(ui), /official/);
       assert.match(text(ui), /가격 오래됨/);
+    } finally { await ui.close(); }
+  }
+});
+
+test('both surfaces omit unavailable accounts and the empty account section', async () => {
+  for (const surface of ['desktop', 'dashboard']) {
+    const a = accounts();
+    a.accounts = ['unsupported', 'unavailable', 'error', 'unknown'].map(status => ({ ...a.accounts[0], provider: 'hidden-' + status, status }));
+    const fetcher = async p => p.includes('/summary') ? summary() : a;
+    const d = surface === 'desktop' ? loadDesktop(fetcher) : loadDashboard(fetcher);
+    const ui = await mount(d.Page, surface === 'desktop');
+    try {
+      assert.equal(Boolean(ui.container.querySelector('[aria-label="계정 한도"]')), false);
+      assert.doesNotMatch(text(ui), /hidden-|표시할 계정 정보가 없습니다/);
+      assert.match(text(ui), /모델별 사용량/);
+    } finally { await ui.close(); }
+  }
+});
+
+test('both surfaces remove the entire price-source column but preserve amounts', async () => {
+  for (const surface of ['desktop', 'dashboard']) {
+    const s = summary();
+    s.models[0] = { ...s.models[0], api_value_usd: 12.34,
+      pricing_source_url: 'https://prices.example.test/models',
+      pricing_source: 'https://prices.example.test/models | long pricing conditions',
+      pricing_version: 'snapshot-version', pricing_basis: 'native_reference' };
+    const fetcher = async p => p.includes('/summary') ? s : accounts();
+    const d = surface === 'desktop' ? loadDesktop(fetcher) : loadDashboard(fetcher);
+    const ui = await mount(d.Page, surface === 'desktop');
+    try {
+      assert.equal(ui.container.querySelectorAll('thead th').length, 6);
+      assert.equal(ui.container.querySelectorAll('tbody a').length, 0);
+      assert.doesNotMatch(text(ui), /가격 출처|원제공자 가격|가격 버전|https:|snapshot-version|long pricing conditions/);
+      assert.match(text(ui), /API 환산 \$12\.34/);
     } finally { await ui.close(); }
   }
 });
@@ -209,7 +243,7 @@ test('desktop registers a standalone page and renders the real schema without un
     assert.match(text(ui), /가격 적용.*0\s*\/\s*1/s);
     assert.match(text(ui), /시작한 세션/); assert.match(text(ui), /정확한 일별 지출이 아/);
     assert.match(text(ui), /first-token latency/); assert.match(text(ui), /새로 수집/);
-    assert.match(text(ui), /미보고/); assert.match(text(ui), /공급자 미지원/);
+    assert.match(text(ui), /미보고/); assert.doesNotMatch(text(ui), /공급자 미지원/);
     assert.match(text(ui), /working-provider/); assert.match(text(ui), /75%/);
     assert.match(text(ui), /<img src=x/); assert.equal(ui.container.querySelector('img'), null);
     assert.match(text(ui), /캐시 쓰기/); assert.match(text(ui), /reasoning/);

@@ -80,6 +80,41 @@ class SummaryTests(unittest.TestCase):
             self.assertIsNone(result['totals']['api_value_usd'])
             self.assertEqual(before, (home / 'state.db').read_bytes())
 
+    def test_native_fallback_completes_missing_route_components_without_changing_billing(self):
+        from decimal import Decimal
+        from types import SimpleNamespace
+        from usage_core import build_summary
+        with tempfile.TemporaryDirectory(dir=ROOT.parents[1] / 'cache' / 'scratch') as tmp:
+            home = Path(tmp)
+            con = sqlite3.connect(home / 'state.db')
+            con.executescript('''
+                CREATE TABLE sessions(id TEXT PRIMARY KEY, started_at REAL);
+                INSERT INTO sessions VALUES ('s',1000000);
+                CREATE TABLE session_model_usage(session_id TEXT,model TEXT,billing_provider TEXT,
+                    billing_mode TEXT,task TEXT,api_call_count INTEGER,input_tokens INTEGER,
+                    output_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,
+                    reasoning_tokens INTEGER,estimated_cost_usd REAL,actual_cost_usd REAL,cost_status TEXT);
+                INSERT INTO session_model_usage VALUES ('s','gpt-example','unknown','', '',1,1000000,0,1000000,0,0,NULL,NULL,'unknown');
+            ''')
+            con.commit(); con.close()
+            route = SimpleNamespace(input_cost_per_million=Decimal('99'), output_cost_per_million=Decimal('99'),
+                cache_read_cost_per_million=None, cache_write_cost_per_million=None, request_cost=None,
+                source='route', pricing_version='route-version')
+            native = SimpleNamespace(input_cost_per_million=Decimal('2'), output_cost_per_million=Decimal('10'),
+                cache_read_cost_per_million=Decimal('.2'), cache_write_cost_per_million=None, request_cost=None,
+                source='official', source_url='https://example.test/prices', pricing_version='native-version',
+                pricing_basis='native_reference', provider='openai', model='gpt-example')
+            result = build_summary(home, now=1000010, price_lookup=lambda p,m: route,
+                native_price_lookup=lambda p,m: native)
+            row = result['models'][0]
+            self.assertEqual(row['api_value_usd'], 2.2)
+            self.assertEqual(row['pricing_source_url'], native.source_url)
+            self.assertEqual(row['pricing_basis'], 'native_reference')
+            self.assertEqual(row['provider'], 'unknown')
+            self.assertEqual(row['billing_mode'], '')
+            self.assertIsNone(row['actual_cost_usd'])
+            self.assertIsNone(row['estimated_cost_usd'])
+
 class PricingTests(unittest.TestCase):
     def test_api_equivalent_is_base_tariff_not_subscription_zero_or_aggregate_tier(self):
         import usage_core

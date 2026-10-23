@@ -17,11 +17,19 @@ from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 
+# Isolated (-I) fetch subprocesses exclude the script directory from sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pricing_extra import SOURCES as EXTRA_SOURCES, parse as parse_extra
+
 SOURCES = {
     'nous': 'https://inference-api.nousresearch.com/v1/models',
     'openrouter': 'https://openrouter.ai/api/v1/models',
     'openai': 'https://developers.openai.com/api/docs/pricing',
     'anthropic': 'https://platform.claude.com/docs/en/about-claude/pricing',
+    'zai': 'https://docs.z.ai/guides/overview/pricing',
+    'stepfun': 'https://platform.stepfun.ai/docs/en/guides/pricing/details',
+    'meta': 'https://dev.meta.ai/docs/pricing-rate-limits',
+    **EXTRA_SOURCES,
 }
 RATE_FIELDS = {
     'input_cost_per_million': 'prompt',
@@ -67,7 +75,7 @@ def _fetch_http(name):
     # No auth, cookies, credential files, environment proxies, or custom endpoints.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _OfficialRedirect(name))
     request = urllib.request.Request(SOURCES[name], headers={
-        'User-Agent': 'HermesUsagePlusPricing/1.0', 'Accept-Encoding': 'identity',
+        'User-Agent': 'Mozilla/5.0 HermesUsagePlusPricing/1.0', 'Accept-Encoding': 'identity',
         'Accept': 'application/json' if name in ('nous', 'openrouter') else 'text/html',
     })
     with opener.open(request, timeout=8) as response:
@@ -90,7 +98,7 @@ def _fetch_sources(deadline):
     """Killable network processes bound DNS, slow-drip bodies, and socket timeouts.
 
     One bulk request per source (plus at most 3 same-host redirects), no retries.
-    All four start together. No worker may survive this function.
+    All sources start together. No worker may survive this function.
     """
     workers, results = {}, {}
     try:
@@ -262,12 +270,16 @@ class _Document(HTMLParser):
         self.deadline = deadline
         self.stack, self.text, self.openai, self.tables = [], [], [], []
         self.heading = None
+        self.heading_start = 0
         self.table = self.row = self.cell = None
+        self.paragraphs, self.paragraph = [], None
 
     def handle_starttag(self, tag, attrs):
         if self.deadline is not None and time.monotonic() >= self.deadline:
             raise _SourceError('timeout')
         attrs = dict(attrs)
+        if tag in ('p', 'li') or (tag == 'span' and attrs.get('data-as') == 'p'):
+            self.paragraph = []
         if tag == 'astro-island' and attrs.get('component-export') == 'TextTokenPricingTables':
             ancestors = [a for _, a in self.stack]
             if (any(a.get('id') == 'mainContent' for a in ancestors)
@@ -277,12 +289,13 @@ class _Document(HTMLParser):
                 if 'Prices per 1M tokens.' not in recent:
                     raise ValueError('unverified_units')
                 self.openai.append(_json(attrs['props']))
-        if tag == 'h2':
+        if tag in ('h2', 'h3'):
             self.heading = attrs.get('id')
+            self.heading_start = len(self.text)
         if tag == 'table':
             if self.table is not None:
                 raise ValueError('nested_table')
-            self.table = {'heading': self.heading, 'rows': []}
+            self.table = {'heading': self.heading, 'rows': [], 'intro': ' '.join(self.text[self.heading_start:])}
         elif tag == 'tr' and self.table is not None:
             self.row = []
         elif tag in ('td', 'th') and self.row is not None:
@@ -297,12 +310,19 @@ class _Document(HTMLParser):
         if any(tag in ('script', 'style') for tag, _ in self.stack):
             return
         self.text.append(data)
+        if self.paragraph is not None:
+            self.paragraph.append(data)
         if self.cell is not None:
             self.cell['text'] += data
             if any(tag == 'a' for tag, _ in self.stack):
                 self.cell['anchor'] += data
 
     def handle_endtag(self, tag):
+        paragraph_end = tag in ('p', 'li') or (tag == 'span' and self.stack
+                        and self.stack[-1][1].get('data-as') == 'p')
+        if paragraph_end and self.paragraph is not None:
+            self.paragraphs.append(' '.join(' '.join(self.paragraph).split()))
+            self.paragraph = None
         if tag in ('td', 'th'):
             self.cell = None
         elif tag == 'tr' and self.row is not None:
@@ -433,6 +453,85 @@ def _parse_anthropic(document, checked_at):
     return rows, {'model_count': count, 'skipped_count': count - len(rows)}
 
 
+def _parse_native_table(name, document, checked_at):
+    """Small exact-ID contracts; adjacent model/tier tariffs are never borrowed."""
+    headers = {
+        'zai': ['Model', 'Input', 'Cached Input', 'Cached Input Storage', 'Output'],
+        'stepfun': ['Model', 'Billing unit', 'Input (cache miss)', 'Input (cache hit)', 'Output'],
+        'meta': ['Usage', 'Standard mode (per 1M tokens)', 'Contributor mode (per 1M tokens)'],
+    }[name]
+    if name == 'zai':
+        currencies = [currency for paragraph in document.paragraphs for currency in re.findall(
+            r'(?:^|[.!?]\s+)All prices are in ([A-Za-z]+)\.(?=\s|$)', paragraph)]
+        if not currencies or set(currencies) != {'USD'}:
+            raise ValueError('unverified_currency_or_units')
+    found = []
+    for table in document.tables:
+        cells = [[' '.join(c['text'].split()) for c in r] for r in table['rows']]
+        if not cells or cells[0] != headers:
+            continue
+        if name == 'meta':
+            supported = {
+                'muse-wonder-pricing': ('muse-wonder-1.0',),
+                'muse-spark-pricing': ('muse-spark-1.1', 'muse-spark-1.2', 'muse-spark-1.3',
+                                       'muse-spark-1.2-contributor', 'muse-spark-1.3-contributor'),
+            }.get(table['heading'], ())
+            models = [model for model in supported if re.search(
+                r'(?<![\w./:~+\-])' + re.escape(model) + r'(?![\w/:~+\-]|\.[\w])', table['intro'])]
+            if not models:
+                continue
+            values = {r[0]: r for r in cells[1:] if len(r) == 3}
+            if len(values) != len(cells) - 1 or set(values) != {'Input', 'Output', 'Cached input'}:
+                raise ValueError('changed_native_rows')
+            for model in models:
+                column = 2 if model.endswith('-contributor') else 1
+                found.append((model, [values[k][column] for k in ('Input','Cached input','Output')]))
+        else:
+            label = 'GLM-5.3-Flash' if name == 'zai' else 'step-5-preview'
+            for r in cells[1:]:
+                if not r or r[0] != label:
+                    continue
+                if len(r) != 5 or (name == 'stepfun' and r[1] != '1M tokens'):
+                    raise ValueError('changed_native_rows')
+                if name == 'zai':
+                    intro = ' '.join(table['intro'].split())
+                    units = re.findall(r'\bper\s+([^;]+?\btokens?\b)', intro, re.I)
+                    currencies = re.findall(
+                        r'\b(?:prices?(?: are)? in|currency\s*:?)\s+([A-Za-z]+)', intro, re.I)
+                    if ('Prices per 1M tokens.' not in intro or set(units) != {'1M tokens'}
+                            or any(currency != 'USD' for currency in currencies)):
+                        raise ValueError('unverified_currency_or_units')
+                found.append(('glm-5.3-flash' if name == 'zai' else label,
+                              [r[1],r[2],r[4]] if name == 'zai' else r[2:5]))
+    if not found or (name != 'meta' and len(found) != 1) or len({m for m, _ in found}) != len(found):
+        raise ValueError('missing_or_ambiguous_native_table')
+    rows = []
+    for model, cells in found:
+        rates = []
+        for cell in cells:
+            match = re.fullmatch(r'\$([0-9]+(?:\.[0-9]+)?)', cell)
+            if not match:
+                raise ValueError('unknown_native_rate')
+            rates.append(_rate(match[1]))
+        condition = 'Model-owner official USD/1M token API reference; tools/storage excluded; not billed'
+        if name == 'meta':
+            condition += ('; Contributor mode only; discounted rate requires permission for model training'
+                          if model.endswith('-contributor') else '; Standard mode')
+        row = _row(name, model, checked_at, condition)
+        row.update(input_cost_per_million=rates[0], cache_read_cost_per_million=rates[1], output_cost_per_million=rates[2])
+        if name == 'stepfun':
+            # Match affirmative prose, not a generic phrase borrowed from another model.
+            if not any(re.match(
+                    r'For step-5-preview\s*, the cache-miss input price includes '
+                    r'writing new content to the cache\.(?=\s|$)', paragraph)
+                    for paragraph in document.paragraphs):
+                raise ValueError('unverified_write_semantics')
+            row['cache_write_cost_per_million'] = rates[0]
+            row['source'] += '; cache writes included in cache-miss input price'
+        rows.append(row)
+    return rows, {'model_count': len(rows), 'skipped_count': 0}
+
+
 def _parse(name, payload, checked_at, deadline=None):
     if type(payload) is str:
         payload = payload.encode('utf-8')
@@ -442,9 +541,13 @@ def _parse(name, payload, checked_at, deadline=None):
         raise _SourceError('response_too_large')
     if name in ('nous', 'openrouter'):
         return _parse_api(name, payload, checked_at)
+    if name in EXTRA_SOURCES:
+        return parse_extra(name, payload, checked_at, deadline)
     document = _Document(deadline)
     document.feed(payload.decode('utf-8') if isinstance(payload, bytes) else payload)
     document.close()
+    if name in ('zai', 'stepfun', 'meta'):
+        return _parse_native_table(name, document, checked_at)
     return (_parse_openai if name == 'openai' else _parse_anthropic)(document, checked_at)
 
 
@@ -505,18 +608,70 @@ def refresh_prices(home: Path, *, sources=None) -> dict:
     return result
 
 
-def lookup_price(home: Path, provider: str, model: str) -> SimpleNamespace | None:
+def lookup_price(home: Path, provider: str, model: str, *, native_only=False) -> SimpleNamespace | None:
+    """Exact route first, then the model owner's official cached API reference.
+
+    Only explicit namespaces/transport wrappers are removed. Never trim dates,
+    context/effort suffixes, or infer one maker's tariff from a reseller catalog.
+    The requested provider/model and actual billed cost are never rewritten.
+    """
     requested = provider
-    provider = {'openai-codex': 'openai'}.get(provider, provider)
-    for row in _read(home)['prices']:
-        if row['provider'] == provider and row['model'] == model:
-            entry = dict(row)
-            for field in (*RATE_FIELDS, 'request_cost'):
-                entry[field] = Decimal(entry[field]) if entry[field] is not None else None
-            if requested == 'openai-codex':
-                entry['source'] += ' | openai-codex subscription: OpenAI API equivalent reference, not billed'
-            return SimpleNamespace(**entry)
-    return None
+    route_model = model
+    prefix, sep, rest = model.partition('/')
+    if sep and (prefix == provider or (provider in ('', 'custom', 'opencodex')
+                                     and prefix in ('opencode', 'opencode-go', 'thehive'))):
+        provider, route_model = prefix, rest
+    reference_route = provider == 'opencode-go'
+    provider = {'openai-codex': 'openai', 'opencode-go': 'opencode'}.get(provider, provider)
+    rows = _read(home)['prices']
+    direct = next((r for r in rows if r['provider'] == provider and r['model'] == model), None)
+    if direct is None:
+        direct = next((r for r in rows if r['provider'] == provider and r['model'] == route_model), None)
+    if direct is None and requested == 'opencodex' and prefix == 'thehive':
+        # OpenCodex transport IDs encode the upstream namespace slash as '-'.
+        # Require a unique complete published ID; never trim model/version suffixes.
+        encoded = [r for r in rows if r['provider'] == 'thehive'
+                   and r['model'].replace('/', '-') == route_model]
+        if len(encoded) == 1:
+            direct = encoded[0]
+    row = None if native_only else direct
+    basis = 'native_reference' if requested == 'openai-codex' or native_only else 'route'
+    if row is not None and reference_route:
+        basis = 'provider_reference'
+    if row is None:
+        native_model = model
+        prefix, sep, rest = native_model.partition('/')
+        if sep and prefix in {'opencode', 'opencode-go', 'opencodex', 'google-antigravity', 'thehive'}:
+            native_model = rest
+        native_model = native_model.removesuffix(':free')
+        owners = {'openai', 'anthropic', 'zai', 'stepfun', 'meta', 'deepseek'}
+        prefix, sep, rest = native_model.partition('/')
+        if sep:
+            prefix = {'zai-org': 'zai', 'deepseek-ai': 'deepseek'}.get(prefix, prefix)
+            if prefix not in owners:
+                return None
+            owners = {prefix}
+            native_model = rest
+        matches = [r for r in rows if r['provider'] in owners and (r['model'] == native_model
+                   or (r['provider'] == 'deepseek' and native_model == r.get('model_version', '').lower())
+                   or (r['provider'] == 'deepseek' and r['model'] == 'deepseek-flash'
+                       and native_model == 'deepseek-v4.1-flash'
+                       and re.fullmatch(r'DeepSeek-V4\.1-Flash(?:-\d{4})?', r.get('model_version', ''))))]
+        if len(matches) != 1:
+            return None
+        row = matches[0]
+        basis = 'native_reference'
+    entry = dict(row)
+    for field in (*RATE_FIELDS, 'request_cost'):
+        entry[field] = Decimal(entry[field]) if entry[field] is not None else None
+    entry.update(pricing_basis=basis, source_url=SOURCES[row['source_id']])
+    if basis == 'provider_reference':
+        entry['source'] += ' | OpenCode Console API equivalent reference, not Go subscription billing'
+    if basis == 'native_reference':
+        entry['source'] += ' | model-owner official API equivalent reference, not billed'
+        if row['provider'] == 'deepseek' and native_model == 'deepseek-v4.1-flash':
+            entry['source'] += '; undated V4.1-Flash generation reference uses the currently published MODEL VERSION, not a historical invoice'
+    return SimpleNamespace(**entry)
 
 
 def status(home: Path) -> dict:

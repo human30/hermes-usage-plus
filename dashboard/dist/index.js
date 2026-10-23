@@ -41,7 +41,8 @@ function QueryStatus({ title, query }) {
     ...(Array.isArray(data?.warnings) ? data.warnings : []).map((w, i) => h('p', { key: i }, String(w))));
 }
 function AccountCards({ data }) {
-  const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+  const accounts = (Array.isArray(data?.accounts) ? data.accounts : []).filter(a => a && a.status === 'ok');
+  if (!accounts.length) return null;
   return h('section', { 'aria-label': '계정 한도' }, h('h2', null, '계정 한도 및 제공자 정보'),
     h('p', { style: styles.muted }, '계정 잔액·크레딧은 제공자가 전달한 값이며, 실제 청구 합계나 API 환산액이 아닙니다. 모델 범위와 계정 공유 한도를 구분합니다.'),
     accounts.length ? h('div', { style: styles.grid }, ...accounts.map((a, i) => h('article', { key: `${a.provider}-${i}`, style: styles.card },
@@ -59,7 +60,7 @@ function AccountCards({ data }) {
 }
 function ModelTable({ data }) {
   const models = Array.isArray(data?.models) ? data.models : [];
-  const headers = ['모델 / 제공자', '호출 / 세션', '입력·출력 tokens', '캐시 / prompt tokens', '금액 (USD)', '가격 출처', '요청 속도 / 시간'];
+  const headers = ['모델 / 제공자', '호출 / 세션', '입력·출력 tokens', '캐시 / prompt tokens', '금액 (USD)', '요청 속도 / 시간'];
   return h('section', { 'aria-label': '모델별 사용량' }, h('h2', null, '모델별 사용량'),
     h('div', { style: { overflowX: 'auto' }, tabIndex: 0, role: 'region', 'aria-label': '모델 표 가로 스크롤' },
       h('table', { style: { borderCollapse: 'collapse', width: '100%' } },
@@ -72,7 +73,7 @@ function ModelTable({ data }) {
           h('td', { style: styles.cell }, `캐시 읽기 ${number(m.cache_read_tokens)}`, h('p', null, `캐시 쓰기 ${number(m.cache_write_tokens)}`), h('p', null, `prompt ${number(m.prompt_tokens)}`),
             h('p', null, `적중률 ${finite(m.cache_hit_pct) ? number(m.cache_hit_pct) + '%' : '미보고 / 미확인'} · ${m.cache_status || '상태 미확인'}`)),
           h('td', { style: styles.cell }, h('p', null, `실제 청구 ${money(m.actual_cost_usd)}`), h('p', null, `API 환산 ${money(m.api_value_usd)}`), h('p', { style: styles.muted }, `추정 비용 (실제 청구 아님) ${money(m.estimated_cost_usd)}`)),
-          h('td', { style: styles.cell }, String(m.pricing_source || '미확인'), h('p', null, `가격 버전: ${m.pricing_version || '미확인'}`)),
+
           h('td', { style: styles.cell }, `평균 ${number(m.avg_tps)} tokens/s`, h('p', null, `평균 요청 시간 ${number(m.avg_latency_s)}초`), h('p', null, `timing 표본 ${number(m.timing_samples)}`))))))),
     !models.length ? h('p', null, '선택한 기간에 표시할 모델이 없습니다.') : null,
     h('p', { style: styles.muted }, 'provider/model 전체 속도 (billing mode 공통 표본) = 출력 tokens / 전체 API 요청 시간 (first-token latency 포함). 순수 decode tokens/s가 아닙니다. timing 표본은 새로 수집한 요청에만 있습니다.'));

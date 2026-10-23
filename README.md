@@ -9,6 +9,9 @@ Hermes용 사용량·계정 한도 플러그인. 코어 수정 없이 웹 Dashbo
 - 설치 후 측정되는 처리속도: `sum(output_tokens) / sum(API request seconds)`
 - 실제 청구액, Hermes 기록의 추정 비용, 최신 공식 단가의 **API 환산 참고액**을 분리
 - 서비스가 반환한 계정 quota windows, reset time 및 credit 정보
+- 조회 불가·미지원·실패 계정 카드는 숨기고, 표시할 계정이 없으면 해당 영역도 숨김
+- 경유 제공자/결제 방식 미확인 또는 단가 누락 시, 식별된 모델 원제공자의 공식 API 단가로 참고 환산
+- 가격 출처 열·링크·버전 문구를 화면에서 제거하고, 검증용 출처·단가 metadata는 backend에 보존
 - 공식 가격 자동 수집과 source별 정상 확인 시각, 갱신 오류, 가격 적용 범위
 
 ## Install from Git — 권장 설치 방법
@@ -80,6 +83,12 @@ Get-ScheduledTaskInfo -TaskName Hermes_UsagePlus_Prices
 - [OpenRouter 공식 models API](https://openrouter.ai/api/v1/models)
 - [OpenAI 공식 pricing](https://developers.openai.com/api/docs/pricing)
 - [Anthropic 공식 pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+- [Z.ai 공식 pricing](https://docs.z.ai/guides/overview/pricing) — `glm-5.3-flash`
+- [StepFun 공식 pricing](https://platform.stepfun.ai/docs/en/guides/pricing/details) — `step-5-preview`
+- [Meta 공식 pricing](https://dev.meta.ai/docs/pricing-rate-limits) — Muse Spark 1.1/1.2/1.3 Standard, 1.2/1.3 Contributor, Muse Wonder 1.0
+- [DeepSeek 공식 pricing](https://api-docs.deepseek.com/quick_start/pricing/) — Flash/Pro의 PEAK 참고 단가
+- [OpenCode Console 공식 pricing](https://opencode.ai/v2/docs/console/models/) — OpenCode 경로 우선; Go는 Console API 참고액이며 구독 청구액 아님
+- [Hive 공식 pricing](https://thehive.ai/pricing) — Hive 경로의 게시된 활성 단가; 취소선 정가와 구분
 
 정해진 parser로만 읽습니다. 문서 형식이 바뀌거나 실패하면 source별 마지막 정상 가격과 원래 확인 시각을 유지합니다. 가격이 없으면 **미확인**입니다. 정확한 지원 범위와 단가 조건은 [README-pricing.md](README-pricing.md)를 참고하세요.
 
@@ -90,8 +99,9 @@ Get-ScheduledTaskInfo -TaskName Hermes_UsagePlus_Prices
 - 미확인 모델은 환산 합계에서 제외하며 부분 합계로 표시합니다. 구독의 API 환산액은 실제 청구액이나 환급 가능한 금액이 아닙니다.
 - 속도는 첫 토큰 대기까지 포함하며 순수 decode 속도가 아닙니다. 속도는 provider/model 전체 표본 기준이며 billing mode별 측정이 아닙니다. 동일 provider/model의 여러 billing mode 행에서 같은 통계가 보일 수 있습니다.
 - 과거 캐시 0은 미보고일 수 있어 0%로 단정하지 않습니다. 과거 속도를 소급 생성하지 않습니다.
+- DeepSeek 원제공자 환산은 **PEAK 단가 기준 참고액**입니다. 사용 시간대·중국 공휴일을 소급 적용한 실제 청구액이 아닙니다. 날짜 없는 V4.1-Flash는 현재 공식 표의 같은 generation 참고 단가를 사용하며, 다른 날짜·generation 모델로 임의 치환하지 않습니다.
 - 계정 adapter: Nous, OpenAI Codex, Anthropic, OpenRouter, OpenCode Go. 실제 가용성은 인증과 서비스 응답에 따라 다릅니다. 현재 선택된 credential 기준이며 모든 계정 pool을 합산하지 않습니다.
-- Infron, Hive 등 검증된 balance adapter가 없는 서비스는 **미지원**으로 표시합니다. Google 등 가격 parser가 없는 provider도 가격 미확인입니다. 다른 vendor의 가격으로 몰래 대체하지 않습니다.
+- Infron, Hive 등 검증된 balance adapter가 없는 서비스의 계정 카드는 표시하지 않습니다. 사용량 행 자체는 보존합니다. 공식 단가로 API 참고액만 계산하며 실제 청구액은 바꾸지 않습니다. 가격표·모델 대응·필수 cache 단가가 확인되지 않으면 환산 합계에서 제외합니다.
 
 ## 안전 구조
 

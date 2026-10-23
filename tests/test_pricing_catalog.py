@@ -92,6 +92,192 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(health['error_sources'], 1)
         self.assertEqual(health['healthy_sources'], 1)
 
+    def test_native_reference_fallback_preserves_route_priority_and_exact_identity(self):
+        p = self.module()
+        p.refresh_prices(self.home, sources={
+            'openai': openai_page([['gpt-example', 2, '.1', 10]]),
+            'anthropic': anthropic_page(),
+            'nous': catalog([model(name='openai/gpt-example', prompt='0', completion='0')]),
+        })
+        for provider, name in [('custom', 'gpt-example'), ('', 'openai/gpt-example'),
+                               ('infron', 'openai/gpt-example:free'),
+                               ('opencodex', 'google-antigravity/claude-sonnet-4-5')]:
+            with self.subTest(provider=provider, model=name):
+                price = p.lookup_price(self.home, provider, name)
+                self.assertIsNotNone(price)
+                assert price is not None
+                self.assertEqual(price.pricing_basis, 'native_reference')
+                self.assertIn(price.source_url, (p.SOURCES['openai'], p.SOURCES['anthropic']))
+        direct = p.lookup_price(self.home, 'nous', 'openai/gpt-example')
+        assert direct is not None
+        self.assertEqual(direct.input_cost_per_million, Decimal(0))
+        self.assertEqual(direct.pricing_basis, 'route')
+        for name in ['gpt-example-unknown', 'anthropic/gpt-example', 'evil/gpt-example']:
+            self.assertIsNone(p.lookup_price(self.home, 'custom', name))
+
+    def test_extra_sources_integrate_route_priority_and_native_versions(self):
+        from test_pricing_extra import deepseek_page, opencode_page, hive_page
+        p = self.module()
+        result = p.refresh_prices(self.home, sources={
+            'deepseek': deepseek_page(), 'opencode': opencode_page(), 'thehive': hive_page()})
+        self.assertTrue(all(s['status'] == 'ok' for s in result['sources'].values()))
+        for provider, model_id, owner, rate, basis in [
+                ('opencode', 'paid-exact.1', 'opencode', '1.23', 'route'),
+                ('opencode', 'opencode/paid-exact.1', 'opencode', '1.23', 'route'),
+                ('opencode-go', 'paid-exact.1', 'opencode', '1.23', 'provider_reference'),
+                ('opencodex', 'opencode-go/paid-exact.1', 'opencode', '1.23', 'provider_reference'),
+                ('opencode', 'free-exact', 'opencode', '0', 'route'),
+                ('thehive', 'deepseek-ai/deepseek-v4.1-flash-1017', 'thehive', '1.25', 'route'),
+                ('custom', 'deepseek-ai/deepseek-v4.1-flash-1017', 'deepseek', '2', 'native_reference'),
+                ('infron', 'deepseek/deepseek-v4.1-flash:free', 'deepseek', '2', 'native_reference'),
+                ('opencodex', 'thehive/deepseek-ai-deepseek-v4.1-flash-1017', 'thehive', '1.25', 'route'),
+                ('opencodex', 'thehive/zai-org-glm-5.3-flash', 'thehive', '1.25', 'route'),
+                ('custom', 'deepseek-flash', 'deepseek', '2', 'native_reference')]:
+            with self.subTest(provider=provider, model=model_id):
+                price = p.lookup_price(self.home, provider, model_id)
+                assert price is not None
+                self.assertEqual(price.input_cost_per_million, Decimal(rate))
+                self.assertEqual(price.provider, owner)
+                self.assertEqual(price.pricing_basis, basis)
+        for provider, model_id in [('custom','paid-exact.1'), ('opencodex','paid-exact.1'),
+                ('custom','deepseek-v4.1-flash-9999'), ('custom','deepseek-v4.2-flash')]:
+            self.assertIsNone(p.lookup_price(self.home, provider, model_id))
+        native = p.lookup_price(self.home, 'thehive', 'deepseek-ai/deepseek-v4.1-flash-1017', native_only=True)
+        assert native is not None
+        self.assertEqual(native.provider, 'deepseek')
+        self.assertEqual(native.input_cost_per_million, Decimal('2'))
+
+    def test_meta_prices_all_explicit_standard_and_contributor_ids(self):
+        p = self.module()
+        header = '<tr><th>Usage</th><th>Standard mode (per 1M tokens)</th><th>Contributor mode (per 1M tokens)</th></tr>'
+        payload = '<h3 id="muse-wonder-pricing">Muse Wonder</h3><p>Model: muse-wonder-1.0.</p><table>' + header + (
+            '<tr><td>Input</td><td>$4</td><td>Not available</td></tr>'
+            '<tr><td>Output</td><td>$20</td><td>Not available</td></tr>'
+            '<tr><td>Cached input</td><td>$0.2</td><td>Not available</td></tr></table>'
+            '<h3 id="muse-spark-pricing">Muse Spark</h3><p>Models: muse-spark-1.3, muse-spark-1.2, muse-spark-1.1 in Standard mode; '
+            'muse-spark-1.3-contributor and muse-spark-1.2-contributor in Contributor mode.</p><table>') + header + (
+            '<tr><td>Input</td><td>$1.25</td><td>$0.10</td></tr>'
+            '<tr><td>Output</td><td>$4.25</td><td>$0.20</td></tr>'
+            '<tr><td>Cached input</td><td>$0.15</td><td>$0.002</td></tr></table>')
+        result = p.refresh_prices(self.home, sources={'meta': payload})
+        self.assertEqual(result['sources']['meta']['count'], 6)
+        for model, input_rate in [('muse-wonder-1.0','4'), ('muse-spark-1.1','1.25'),
+                ('muse-spark-1.2','1.25'), ('muse-spark-1.3','1.25'),
+                ('muse-spark-1.2-contributor','0.10'), ('muse-spark-1.3-contributor','0.10')]:
+            entry = p.lookup_price(self.home, 'custom', model)
+            assert entry is not None
+            self.assertEqual(entry.input_cost_per_million, Decimal(input_rate))
+            self.assertEqual(entry.cache_write_cost_per_million, None)
+        for model in ('muse-spark-1.1-contributor','muse-wonder-1.0-contributor','muse-spark-1.4'):
+            self.assertIsNone(p.lookup_price(self.home, 'custom', model))
+
+    def test_additional_native_sources_use_exact_tables_not_neighboring_tariffs(self):
+        p = self.module()
+        def table(headers, rows):
+            return '<table><tr>' + ''.join('<th>'+x+'</th>' for x in headers) + '</tr>' + ''.join(
+                '<tr>'+''.join('<td>'+x+'</td>' for x in row)+'</tr>' for row in rows) + '</table>'
+        payloads = {
+            'zai': '<p>All prices are in USD. Prices per 1M tokens.</p>' + table(
+                ['Model', 'Input', 'Cached Input', 'Cached Input Storage', 'Output'],
+                [['GLM-5.3-FlashX','$99','$98','Limited-time Free','$97'],
+                 ['GLM-5.3-Flash','$2','$0.2','Limited-time Free','$5']]),
+            'stepfun': table(['Model','Billing unit','Input (cache miss)','Input (cache hit)','Output'],
+                [['step-5-preview','1M tokens','$3','$0.3','$7']]) +
+                '<p>For step-5-preview, the cache-miss input price includes writing new content to the cache.</p>',
+            'meta': '<h3 id="muse-wonder-pricing">Muse Wonder</h3>' + table(
+                ['Usage','Standard mode (per 1M tokens)','Contributor mode (per 1M tokens)'],
+                [['Input','$99','$99'],['Output','$99','$99'],['Cached input','$99','$99']]) +
+                '<h3 id="muse-spark-pricing">Muse Spark</h3><p>muse-spark-1.3-contributor</p>' + table(
+                ['Usage','Standard mode (per 1M tokens)','Contributor mode (per 1M tokens)'],
+                [['Input','$99','$4'],['Output','$99','$8'],['Cached input','$99','$0.4']]),
+        }
+        result = p.refresh_prices(self.home, sources=payloads)
+        for source, model_id, input_rate in [('zai','glm-5.3-flash','2'),
+                ('stepfun','step-5-preview','3'), ('meta','muse-spark-1.3-contributor','4')]:
+            with self.subTest(source=source):
+                self.assertEqual(result['sources'][source]['status'], 'ok')
+                entry = p.lookup_price(self.home, 'custom', model_id)
+                assert entry is not None
+                self.assertEqual(entry.input_cost_per_million, Decimal(input_rate))
+                self.assertEqual(entry.pricing_basis, 'native_reference')
+                self.assertEqual(entry.source_url, p.SOURCES[source])
+                self.assertEqual(entry.cache_write_cost_per_million,
+                    Decimal(input_rate) if source == 'stepfun' else None)
+                broken = payloads[source].replace('1M tokens','1K tokens')
+                failed = p.refresh_prices(self.home, sources={source: broken})
+                self.assertEqual(failed['sources'][source]['status'], 'error')
+                self.assertEqual(p.lookup_price(self.home, 'custom', model_id).input_cost_per_million, Decimal(input_rate))
+        self.assertIsNone(p.lookup_price(self.home,'custom','glm-5.3-flashx'))
+        self.assertIsNone(p.lookup_price(self.home,'custom','step-5-preview-free'))
+        self.assertIsNone(p.lookup_price(self.home,'custom','muse-spark-1.3'))
+        self.assertIsNotNone(p.lookup_price(self.home,'custom','zai-org/glm-5.3-flash'))
+        self.assertIsNotNone(p.lookup_price(self.home,'custom','stepfun/step-5-preview:free'))
+
+    def test_stepfun_write_semantics_require_affirmative_exact_model_statement(self):
+        p = self.module()
+        table = ('<table><tr><th>Model</th><th>Billing unit</th><th>Input (cache miss)</th>'
+                 '<th>Input (cache hit)</th><th>Output</th></tr><tr><td>step-5-preview</td>'
+                 '<td>1M tokens</td><td>$3</td><td>$0.3</td><td>$7</td></tr></table>')
+        statement = 'For step-5-preview, the cache-miss input price includes writing new content to the cache.'
+        for valid in (statement, statement.replace('step-5-preview', '<code>step-5-preview</code> ')):
+            with self.subTest(valid=valid):
+                rows, _ = p._parse('stepfun', table + '<p>' + valid + '</p>', 1000)
+                self.assertEqual(rows[0]['cache_write_cost_per_million'], '3')
+        rows, _ = p._parse('stepfun', table + '<span data-as="p">' + statement.replace(
+            'step-5-preview', '<code>step-5-preview</code>') +
+            ' Output tokens include both the model reasoning process and final answer.</span>', 1000)
+        self.assertEqual(rows[0]['cache_write_cost_per_million'], '3')
+        for invalid in (statement.replace('step-5-preview', 'step-other'),
+                        statement.replace('step-5-preview', 'step-5-preview-other'),
+                        statement.replace('includes', 'does not include'),
+                        'It is not true that ' + statement,
+                        statement.replace('For step-5-preview, the', 'The')):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'unverified_write_semantics'):
+                p._parse('stepfun', table + '<p>' + invalid + '</p>', 1000)
+
+    def test_zai_units_and_currency_are_applicable_to_target_table(self):
+        p = self.module()
+        table = ('<table><tr><th>Model</th><th>Input</th><th>Cached Input</th>'
+                 '<th>Cached Input Storage</th><th>Output</th></tr>'
+                 '<tr><td>GLM-5.3-Flash</td><td>$2</td><td>$0.2</td>'
+                 '<td>Limited-time Free</td><td>$5</td></tr></table>')
+        global_usd = '<p>All prices are in USD.</p>'
+        latest = '<h3 id="latest-models">Latest Models</h3>'
+        unrelated = ('<h3 id="other-models">Other Models</h3>'
+                     '<p>All prices are in USD. Prices per 1M tokens.</p>'
+                     + table.replace('GLM-5.3-Flash', 'Other-Model'))
+        for prefix in (global_usd + '<p>Prices per 1M tokens.</p>',
+                       global_usd + latest + '<p>Prices per 1M tokens.</p>'):
+            with self.subTest(valid=prefix):
+                rows, _ = p._parse('zai', prefix + table, 1000)
+                self.assertEqual(rows[0]['input_cost_per_million'], '2')
+        for intro in ('Prices per 1K tokens.', '',
+                      'Prices per 1M tokens. Prices per 1K tokens.',
+                      'Prices per 1M tokens. All prices are in EUR.',
+                      'Prices per 1M tokens. Currency: CNY.',
+                      'Prices per 1M tokens. Prices per 1000 tokens.'):
+            with self.subTest(invalid=intro), self.assertRaisesRegex(ValueError, 'unverified_currency_or_units'):
+                p._parse('zai', unrelated + latest + '<p>' + intro + '</p>' + table, 1000)
+
+    def test_meta_requires_exact_model_token_and_unique_contributor_rows(self):
+        p = self.module()
+        intro = '<h3 id="muse-spark-pricing">Muse Spark</h3><p><code>muse-spark-1.3-contributor</code></p>'
+        input_row = '<tr><td>Input</td><td>$99</td><td>$4</td></tr>'
+        table = ('<table><tr><th>Usage</th><th>Standard mode (per 1M tokens)</th>'
+                 '<th>Contributor mode (per 1M tokens)</th></tr>' + input_row
+                 + '<tr><td>Output</td><td>$99</td><td>$8</td></tr>'
+                 '<tr><td>Cached input</td><td>$99</td><td>$0.4</td></tr></table>')
+        rows, _ = p._parse('meta', intro + table, 1000)
+        self.assertEqual(rows[0]['input_cost_per_million'], '4')
+        for invalid in (intro.replace('contributor</code>', 'contributor-other</code>') + table,
+                        intro.replace('muse-spark-1.3', 'other-muse-spark-1.3') + table,
+                        intro + table.replace('</table>', input_row + '</table>'),
+                        intro + table.replace('<th>Contributor mode (per 1M tokens)</th>', '')
+                                     .replace('<td>$4</td>', '').replace('<td>$8</td>', '')
+                                     .replace('<td>$0.4</td>', '')):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                p._parse('meta', invalid, 1000)
+
     def test_atomic_replace_failure_preserves_existing_file_and_removes_temp(self):
         from unittest.mock import patch
         p = self.module()
@@ -204,8 +390,8 @@ class CatalogTests(unittest.TestCase):
         self.assertIn('equivalent reference', subscription.source)
         self.assertIn('not billed', subscription.source)
         self.assertNotIn('openai-codex', api.source)
-        self.assertIsNone(p.lookup_price(self.home, 'opencode-go', 'gpt-example'))
-        self.assertIsNone(p.lookup_price(self.home, 'custom', 'gpt-example'))
+        self.assertIsNotNone(p.lookup_price(self.home, 'opencode-go', 'gpt-example'))
+        self.assertIsNotNone(p.lookup_price(self.home, 'custom', 'gpt-example'))
         self.assertIsNone(p.lookup_price(self.home, 'openai', 'gpt-example-2026-10-01'))
         context = p.lookup_price(self.home, 'openai', 'gpt-context')
         self.assertEqual(context.tier_threshold_tokens, 272000)
@@ -238,7 +424,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(entry.cache_write_cost_per_million, Decimal('3.75'))
         self.assertIn('5m', entry.source)
         self.assertIsNone(p.lookup_price(self.home, 'anthropic', 'claude-sonnet-4.5'))
-        self.assertIsNone(p.lookup_price(self.home, 'custom', 'claude-sonnet-4-5'))
+        self.assertIsNotNone(p.lookup_price(self.home, 'custom', 'claude-sonnet-4-5'))
 
     def test_anthropic_tiered_cell_is_base_only_with_threshold_and_unknown_names_not_guessed(self):
         p = self.module()

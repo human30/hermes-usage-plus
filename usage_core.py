@@ -60,7 +60,7 @@ def api_value(row, entry):
     return float(amount) if amount.is_finite() and amount >= 0 else None
 
 
-def build_summary(home: Path, days: int = 30, *, now=None, price_lookup=None) -> dict[str, Any]:
+def build_summary(home: Path, days: int = 30, *, now=None, price_lookup=None, native_price_lookup=None) -> dict[str, Any]:
     now = time.time() if now is None else now
     days = max(1, min(365, int(days)))
     cutoff = now - days * 86400
@@ -93,12 +93,22 @@ def build_summary(home: Path, days: int = 30, *, now=None, price_lookup=None) ->
         row['cache_status'] = 'observed' if observed else 'unknown'
         row['cache_hit_pct'] = row['cache_read_tokens'] / row['prompt_tokens'] * 100 if observed and row['prompt_tokens'] else None
         row.update(api_value_usd=None, pricing_source=None, pricing_version=None,
+                   pricing_source_url=None, pricing_basis=None, pricing_provider=None, pricing_model=None,
                    avg_tps=None, avg_latency_s=None, timing_samples=0)
         entry = lookup(row['provider'], row['model'])
         row['api_value_usd'] = api_value(row, entry)
+        if row['api_value_usd'] is None and native_price_lookup is not None:
+            native = native_price_lookup(row['provider'], row['model'])
+            value = api_value(row, native)
+            if value is not None:
+                entry, row['api_value_usd'] = native, value
         if entry:
             row['pricing_source'] = entry.source
             row['pricing_version'] = entry.pricing_version
+            row['pricing_source_url'] = getattr(entry, 'source_url', None)
+            row['pricing_basis'] = getattr(entry, 'pricing_basis', 'route')
+            row['pricing_provider'] = getattr(entry, 'provider', None)
+            row['pricing_model'] = getattr(entry, 'model', None)
     totals: dict[str, Any] = {key: sum(m[key] for m in models) for key in ('api_calls', 'input_tokens', 'output_tokens', 'prompt_tokens', 'cache_read_tokens')}
     priced = [m['api_value_usd'] for m in models if m['api_value_usd'] is not None]
     totals.update(api_value_usd=sum(priced) if priced else None, priced_models=len(priced), models=len(models))

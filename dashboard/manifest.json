@@ -3,7 +3,7 @@
   "label": "Usage+",
   "description": "모델별 사용량·속도·캐시·API 환산액·서비스 잔여량",
   "icon": "BarChart3",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "tab": {"path": "/usage-plus", "position": "after:analytics"},
   "slots": ["analytics:top"],
   "entry": "dist/index.js",
