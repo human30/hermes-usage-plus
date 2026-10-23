@@ -207,6 +207,70 @@ test('both surfaces remove the entire price-source column but preserve amounts',
   }
 });
 
+test('both surfaces provide scoped responsive hierarchy without hiding financial or health caveats', async () => {
+  for (const surface of ['desktop', 'dashboard']) {
+    const s = summary();
+    s.status = 'stale';
+    s.pricing = { price_count: 10, stale: true, sources: { official: { status: 'error', checked_at: 1700000000, count: 10, stale: true } } };
+    const fetcher = async p => p.includes('/summary') ? s : accounts();
+    const d = surface === 'desktop' ? loadDesktop(fetcher) : loadDashboard(fetcher);
+    const ui = await mount(d.Page, surface === 'desktop');
+    try {
+      const page = ui.container.querySelector('.usage-plus');
+      assert.ok(page, 'view has a scoped theme root');
+      const styles = page.querySelectorAll('style');
+      assert.equal(styles.length, 1, 'one constant stylesheet, not per-row styles');
+      const css = styles[0].textContent;
+      for (const token of ['--ui-text-primary', '--ui-text-secondary', '--ui-stroke-secondary', '--ui-accent', '--color-foreground', '--vscode-foreground']) assert.ok(css.includes(token));
+      assert.match(css, /font-family:\s*inherit/);
+      assert.match(css, /font-variant-numeric:\s*tabular-nums/);
+      assert.match(css, /:focus-visible/);
+      assert.match(css, /overflow-x:\s*auto/);
+      assert.match(css, /repeat\(auto-fit,\s*minmax/);
+      assert.doesNotMatch(css, /animation|transition|gradient|backdrop-filter|@import|url\(/);
+      assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b/i, 'fallback colors follow the host or browser system theme');
+      assert.ok(page.querySelector('header.usage-plus-header h1'));
+      assert.equal(page.querySelectorAll('.usage-plus-metric > strong').length, 2);
+      assert.equal(page.querySelector('[aria-pressed="true"]').textContent, '30일');
+      const scroll = page.querySelector('.usage-plus-table-scroll');
+      assert.equal(scroll.tabIndex, 0);
+      assert.equal(scroll.getAttribute('role'), 'region');
+      assert.ok(scroll.getAttribute('aria-label'));
+      assert.ok(scroll.querySelector('caption'));
+      assert.equal(scroll.querySelectorAll('th[scope="col"]').length, 6);
+      assert.equal(scroll.querySelectorAll('th[scope="row"]').length, 1);
+      assert.equal(page.querySelectorAll('[style]').length, 0, 'presentation uses shared CSS');
+      const visibleText = [...page.querySelectorAll('p, caption, [role="status"], [role="alert"]')]
+        .filter(el => !el.closest('details:not([open])')).map(el => el.textContent).join('\n');
+      for (const warning of ['정확한 일별 지출이 아닙니다', '실제 청구액이 아닙니다', '미확인 모델 비용은 합산하지 않습니다', '0% 적중의 증거가 아닙니다', '실제 청구 합계나 API 환산액이 아닙니다', '갱신 실패', '가격 오래됨', '오래된 데이터', '테스트 경고']) assert.ok(visibleText.includes(warning), warning);
+    } finally { await ui.close(); }
+  }
+});
+
+test('both surfaces cache numeric formatters while preserving locale and unknown semantics', () => {
+  for (const file of ['desktop/plugin.js', 'dashboard/dist/index.js']) {
+    const source = fs.readFileSync(path.join(base, file), 'utf8');
+    let constructions = 0;
+    const context = vm.createContext({ React, Intl: { NumberFormat: class extends Intl.NumberFormat {
+      constructor(...args) { super(...args); constructions++; }
+    } } });
+    vm.runInContext(source.slice(source.indexOf('// Kept dependency-free'), source.indexOf('class UsageBoundary')) + '\nglobalThis.format = { number, money, date };', context);
+    assert.equal(constructions, 2, 'number and money formatters are created once at module scope');
+    for (let repeat = 0; repeat < 3; repeat++) {
+      for (const value of [null, undefined, NaN, Infinity, -Infinity, '12', 0, -0, 1234567.891, -0.000123, 12.3456789]) {
+        const known = typeof value === 'number' && Number.isFinite(value);
+        assert.equal(context.format.number(value), known ? value.toLocaleString('ko-KR', { maximumFractionDigits: 2 }) : '미확인');
+        assert.equal(context.format.money(value), known ? `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : '미확인');
+      }
+    }
+    assert.equal(constructions, 2, 'formatting cells never constructs more formatters');
+    for (const value of [null, undefined, '', 'invalid', NaN, 0, 1700000000, '2026-01-01T00:00:00Z', '1700000000']) {
+      const d = new Date(typeof value === 'number' ? value * 1000 : value);
+      assert.equal(context.format.date(value), value == null || Number.isNaN(d.getTime()) ? '미확인' : d.toLocaleString('ko-KR'));
+    }
+  }
+});
+
 test('shared view stays identical and desktop imports only approved modules', () => {
   const desktop = fs.readFileSync(path.join(base, 'desktop/plugin.js'), 'utf8');
   const dashboard = fs.readFileSync(path.join(base, 'dashboard/dist/index.js'), 'utf8');
