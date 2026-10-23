@@ -1,0 +1,7 @@
+name: usage-plus
+version: 0.1.0
+description: "Model usage, observed throughput, cache hits, API-equivalent value and provider quotas."
+provides_tools: []
+provides_hooks:
+  - post_api_request
+  - post_auxiliary_call
