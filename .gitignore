@@ -4,6 +4,13 @@ __pycache__/
 node_modules/
 .env
 .env.*
+auth.json
+secrets/
+backups/
+*.pem
+*.key
+*.p12
+*.pfx
 *.db
 *.db-*
 cache/

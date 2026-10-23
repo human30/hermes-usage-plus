@@ -33,19 +33,15 @@ https://github.com/human30/hermes-usage-plus.git
 
 > **중요:** 바깥 Usage+ 카드의 스위치가 ON이어도 상세 화면의 Desktop 스위치는 OFF일 수 있습니다. 메뉴가 안 보일 때는 재설치보다 **`Desktop: Usage+`**부터 확인하세요. 두 스위치는 서로 다른 실행 부분을 제어합니다.
 
-### 비공개 저장소 인증
+### 공개 저장소 접근
 
-현재 저장소는 **비공개**입니다. 저장소 접근 권한이 있는 GitHub 계정의 인증이 설치를 수행하는 기기에 필요합니다. 로그인되지 않은 기기에서는 `Repository not found` 또는 인증 오류가 날 수 있습니다.
-
-GitHub CLI를 사용하는 경우 해당 기기의 터미널에서:
+이 저장소는 **공개**이며, 소스 다운로드와 Install from Git에 GitHub 로그인이나 개인 접근 토큰이 필요하지 않습니다. 터미널에서 접근 여부를 확인하려면:
 
 ```powershell
-gh auth login
-gh auth setup-git
 git ls-remote https://github.com/human30/hermes-usage-plus.git HEAD
 ```
 
-마지막 명령이 commit SHA를 반환한 뒤 Install from Git을 다시 실행하세요. 인증은 GitHub의 로그인 절차로 진행하며 토큰을 저장소 URL이나 채팅에 붙여 넣지 마세요. 원격 backend를 사용하는 경우 **Desktop 기기와 Agent 서버 각각**의 인증을 확인해야 합니다.
+명령이 commit SHA를 반환하면 저장소에 접근할 수 있습니다. 원격 backend를 사용한다면 Desktop 기기와 Agent 서버가 각각 GitHub에 연결될 수 있어야 합니다. 서비스별 계정 한도 조회에 필요한 Hermes의 기존 서비스 인증은 저장소 다운로드 인증과 별개이며, 토큰을 저장소 URL이나 채팅에 붙여 넣지 마세요.
 
 ### 다른 PC / Mac에서 원격 Windows backend에 연결하는 경우
 
@@ -108,6 +104,8 @@ Get-ScheduledTaskInfo -TaskName Hermes_UsagePlus_Prices
 API handler는 async이며 SQL·계정 HTTP 요청은 별도 일회성 Python 프로세스에서 실행합니다. 30초 제한 후 kill/reap, 조회 동시성 2개, 사용량 60초/계정 300초 cache, 실패 시 마지막 정상값을 유지합니다. UI에는 React error boundary가 있습니다.
 
 원본 `state.db`는 읽기 전용이며 메시지 본문을 검색하지 않습니다. 별도 `cache/usage-plus/metrics.db`에는 session/request 식별자, 모델/provider, 시간·token 숫자만 기록합니다. prompt/response/URL/key는 저장하지 않습니다. 쓰기 큐와 표본 수는 제한됩니다.
+
+공개 저장소에는 소스·문서·합성 테스트 데이터만 포함합니다. 사용자의 인증 파일, 대화 DB, 실제 사용량·잔액 응답, 가격 캐시, 로그, 백업은 포함하지 않습니다. 실행 시 사용자 데이터는 각 설치 환경에서 처리하며, 공식 가격 문서 조회와 기존 Hermes 계정 adapter의 서비스 조회 외에 개발자 서버로 전송하는 기능은 없습니다. `.gitignore`는 일반적인 인증 파일·키·로컬 데이터 경로를 제외하지만, 이미 추적된 파일이나 과거 커밋의 민감정보를 자동으로 제거하지는 않습니다.
 
 이것은 OS 보안 sandbox가 아닙니다. 메모리·CPU 고갈에 대한 하드 제한은 없으므로 장애 가능성 0을 보장하지 않습니다. 프로필의 전역 `plugins.isolation` 설정은 변경하지 않습니다.
 
