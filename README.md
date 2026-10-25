@@ -85,6 +85,7 @@ Get-ScheduledTaskInfo -TaskName Hermes_UsagePlus_Prices
 - [DeepSeek 공식 pricing](https://api-docs.deepseek.com/quick_start/pricing/) — Flash/Pro의 PEAK 참고 단가
 - [OpenCode Console 공식 pricing](https://opencode.ai/v2/docs/console/models/) — OpenCode 경로 우선; Go는 Console API 참고액이며 구독 청구액 아님
 - [Hive 공식 pricing](https://thehive.ai/pricing) — Hive 경로의 게시된 활성 단가; 취소선 정가와 구분
+- [Google Gemini 공식 pricing](https://ai.google.dev/gemini-api/docs/pricing) — Gemini 4 Argon, 3.8/3.6 Flash, 3.5/3.1 Flash-Lite, 3.1 Pro Preview, 3 Flash Preview, 2.5 Pro/Flash/Flash-Lite의 Standard 텍스트 단가
 
 정해진 parser로만 읽습니다. 문서 형식이 바뀌거나 실패하면 source별 마지막 정상 가격과 원래 확인 시각을 유지합니다. 가격이 없으면 **미확인**입니다. 정확한 지원 범위와 단가 조건은 [README-pricing.md](README-pricing.md)를 참고하세요.
 
