@@ -37,6 +37,49 @@ def opencode_page(prices=None, endpoints=None):
             ['Paid Display Neighbor', '$99', '$99', '$99', '$99']])
 
 
+GOOGLE_PAID = 'Paid Tier, per 1M tokens in USD'
+
+
+def google_page(sections=None, *, paid=GOOGLE_PAID):
+    sections = sections if sections is not None else [
+        ('gemini-4-argon', [
+            ('Input price', '$2.00 through November 30, 2026. $4.00 starting December 1, 2026.'),
+            ('Output price (including thinking tokens)',
+             '$10.00 through November 30, 2026. $20.00 starting December 1, 2026.'),
+            ('Context caching price', '$0.10 through November 30, 2026. $0.20 starting December 1, 2026. '
+             'Implicit caching only (explicit caching is not supported).'),
+            ('Grounding with Google Search*', '5,000 free requests, then $14 per 1,000 requests.'),
+        ]),
+        ('gemini-3.1-pro-preview', [
+            ('Input price', '$2.00, prompts <= 200k tokens $4.00, prompts > 200k tokens'),
+            ('Output price (including thinking tokens)', '$12.00, prompts <= 200k tokens $18.00, prompts > 200k'),
+            ('Context caching price', '$0.20, prompts <= 200k tokens $0.40, prompts > 200k '
+             '$4.50 / 1,000,000 tokens per hour (storage price)'),
+        ]),
+        ('gemini-2.5-flash', [
+            ('Input price', '$0.30 (text / image / video) $1.00 (audio)'),
+            ('Output price (including thinking tokens)', '$2.50'),
+            ('Context caching price', '$0.03 (text / image / video) $0.1 (audio) '
+             '$1.00 / 1,000,000 tokens per hour (storage price)'),
+        ]),
+    ]
+    body = ''
+    for anchor, rows in sections:
+        body += ('<h2 id="' + anchor + '">Display name</h2><h3 id="standard">Standard</h3><table>'
+                 '<tr><th></th><th>Free Tier</th><th>' + paid + '</th></tr>')
+        body += ''.join('<tr><td>' + label + '</td><td>Free of charge</td><td>' + value + '</td></tr>'
+                        for label, value in rows)
+        body += '</table><h3 id="batch">Batch</h3><table><tr><th></th><th>Free Tier</th><th>' + paid
+        body += ('</th></tr><tr><td>Input price</td><td>Not available</td>'
+                 '<td>$99.00</td></tr></table>')
+    # Unmapped media section: text-only coverage must not borrow its image rate.
+    body += ('<h2 id="gemini-2.5-flash-image">Image</h2><h3 id="standard_9">Standard</h3><table>'
+             '<tr><th></th><th>Free Tier</th><th>' + paid + '</th></tr>'
+             '<tr><td>Input price</td><td>Not available</td><td>$0.30 (text / image)</td></tr>'
+             '<tr><td>Output price</td><td>Not available</td><td>$0.039 per image*</td></tr></table>')
+    return body
+
+
 def hive_page(label='DeepSeek-V4.1-Flash-1017', discounted=True):
     body = ''
     for name in (label, 'Z.AI GLM-5.3-Flash'):
@@ -133,6 +176,90 @@ class ExtraTests(unittest.TestCase):
                     self.assertIn('docs.thehive.ai', row['model_id_source'])
                 self.assertNotIn('deepseek-ai/deepseek-v4.1-flash-1017', rows[0].get('aliases', []))
 
+
+    def test_google_standard_text_rates_scheduled_change_and_tiers(self):
+        from datetime import datetime, timezone
+        p = self.module()
+        checked = datetime(2026, 10, 26, tzinfo=timezone.utc).timestamp()
+        rows, stats = p.parse('google', google_page(), checked)
+        self.assertEqual([r['model'] for r in rows],
+                         ['gemini-4-argon', 'gemini-3.1-pro-preview', 'gemini-2.5-flash'])
+        self.assertEqual(stats, {'model_count': len(p.GOOGLE_MODEL_SECTIONS),
+                                 'skipped_count': len(p.GOOGLE_MODEL_SECTIONS) - 3})
+        argon = rows[0]
+        self.assertEqual([argon[f] for f in p.RATE_FIELDS], ['2.00', '10.00', '0.10', None])
+        self.assertEqual(argon['current_until'], '2026-11-30')
+        self.assertEqual(argon['next_rates'], {'input_cost_per_million': '4.00',
+                                              'output_cost_per_million': '20.00',
+                                              'cache_read_cost_per_million': '0.20'})
+        self.assertIsNone(argon['tier_threshold_tokens'])
+        tiered = rows[1]
+        self.assertEqual([tiered[f] for f in p.RATE_FIELDS], ['2.00', '12.00', '0.20', None])
+        self.assertEqual(tiered['tier_threshold_tokens'], 200000)
+        self.assertEqual(tiered['above_threshold_rates'], {'input_cost_per_million': '4.00',
+                                                           'output_cost_per_million': '18.00',
+                                                           'cache_read_cost_per_million': '0.40'})
+        self.assertIsNone(tiered.get('current_until'))
+        self.assertEqual([rows[2][f] for f in p.RATE_FIELDS], ['0.30', '2.50', '0.03', None])
+        for row in rows:
+            self.assertEqual(row['provider'], 'google')
+            self.assertEqual(row['source_id'], 'google')
+            self.assertTrue(row['source'].startswith(p.SOURCES['google'] + ' | '))
+            self.assertIn('Standard', row['source'])
+            self.assertIn('not billed', row['source'])
+            self.assertEqual(row['checked_at'], checked)
+            self.assertIn('UTC', row['pricing_version'])
+
+    def test_google_scheduled_rate_switches_after_the_published_transition(self):
+        from datetime import datetime, timezone
+        p = self.module()
+        rows, _ = p.parse('google', google_page(), datetime(2026, 12, 2, tzinfo=timezone.utc).timestamp())
+        self.assertEqual([rows[0][f] for f in p.RATE_FIELDS], ['4.00', '20.00', '0.20', None])
+        self.assertNotIn('current_until', rows[0])
+        self.assertNotIn('next_rates', rows[0])
+        boundary, _ = p.parse('google', google_page(), datetime(2026, 12, 1, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(boundary[0]['input_cost_per_million'], '4.00')
+        last_day, _ = p.parse('google', google_page(), datetime(2026, 11, 30, 23, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(last_day[0]['input_cost_per_million'], '2.00')
+
+    def test_google_units_conditions_and_mixed_tiers_fail_closed(self):
+        p = self.module()
+        mixed = [('gemini-2.5-pro', [
+            ('Input price', '$1.25, prompts <= 200k tokens $2.50, prompts > 200k tokens'),
+            ('Output price (including thinking tokens)', '$10.00, prompts <= 100k tokens $15.00, prompts > 100k tokens'),
+        ])]
+        bad_schedule = [('gemini-2.5-pro', [
+            ('Input price', '$1.25 through November 30, 2026. $2.50 starting December 2, 2026.'),
+            ('Output price (including thinking tokens)', '$10.00'),
+        ])]
+        unsupported = [('gemini-9.9-unknown', [
+            ('Input price', '$1.00'), ('Output price (including thinking tokens)', '$10.00')])]
+        cases = [
+            (google_page(paid='Paid Tier, per 1M tokens in EUR'), 'unverified_units'),
+            (google_page([('gemini-2.5-pro', [
+                ('Input price', 'Contact sales'),
+                ('Output price (including thinking tokens)', '$10.00')])]), 'unknown_price'),
+            (google_page([('gemini-2.5-pro', [
+                ('Input price', '$1.00 (audio)'),
+                ('Output price (including thinking tokens)', '$10.00')])]), 'no_text_rate'),
+            (google_page([('gemini-2.5-pro', [('Input price', '$1.00')])]), 'missing_text_rates'),
+            (google_page(mixed), 'inconsistent_tier'),
+            (google_page(bad_schedule), 'inconsistent_schedule'),
+            (google_page([('gemini-2.5-pro', [
+                ('Input price', '$1.00'), ('Output price (including thinking tokens)', '$10.00')])] * 2),
+             'duplicate_model_section'),
+            (google_page(unsupported), 'no_supported_prices'),
+        ]
+        for payload, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                p.parse('google', payload, 1000)
+
+    def test_google_never_borrows_batch_or_unmapped_media_rates(self):
+        p = self.module()
+        rows, _ = p.parse('google', google_page(), 1000)
+        self.assertNotIn('gemini-2.5-flash-image', [r['model'] for r in rows])
+        for row in rows:
+            self.assertNotIn('99', [row[f] for f in p.RATE_FIELDS if row[f]])
 
     def test_input_limits_deadlines_and_unknown_source(self):
         p = self.module()

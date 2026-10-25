@@ -147,6 +147,33 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(native.provider, 'deepseek')
         self.assertEqual(native.input_cost_per_million, Decimal('2'))
 
+    def test_google_gemini_routes_resolve_official_text_reference_only(self):
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        from test_pricing_extra import google_page
+        p = self.module()
+        checked = datetime(2026, 10, 26, tzinfo=timezone.utc).timestamp()
+        with patch.object(p.time, 'time', return_value=checked):
+            result = p.refresh_prices(self.home, sources={'google': google_page()})
+        self.assertEqual(result['sources']['google']['status'], 'ok')
+        self.assertEqual(result['sources']['google']['count'], 3)
+        for provider, name, rate in [('opencodex', 'aistudio/gemini-4-argon', '2.00'),
+                                     ('opencodex', 'google-antigravity/gemini-3.1-pro-preview', '2.00'),
+                                     ('antigravity-subscription-directsdk', 'gemini-4-argon', '2.00'),
+                                     ('custom', 'google/gemini-2.5-flash', '0.30'),
+                                     ('', 'gemini-2.5-flash', '0.30'),
+                                     ('custom', 'aistudio/gemini-2.5-flash', '0.30')]:
+            with self.subTest(provider=provider, model=name):
+                entry = p.lookup_price(self.home, provider, name)
+                assert entry is not None
+                self.assertEqual(entry.input_cost_per_million, Decimal(rate))
+                self.assertEqual(entry.provider, 'google')
+                self.assertEqual(entry.pricing_basis, 'native_reference')
+                self.assertEqual(entry.source_url, p.SOURCES['google'])
+                self.assertIsNone(entry.cache_write_cost_per_million)
+        for name in ('gemini-3.8-flash', 'gemini-3.8-flash-low', 'gemini-4-argon-900k'):
+            self.assertIsNone(p.lookup_price(self.home, 'custom', name))
+
     def test_meta_prices_all_explicit_standard_and_contributor_ids(self):
         p = self.module()
         header = '<tr><th>Usage</th><th>Standard mode (per 1M tokens)</th><th>Contributor mode (per 1M tokens)</th></tr>'

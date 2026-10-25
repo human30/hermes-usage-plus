@@ -666,10 +666,11 @@ def _lookup_price(rows, provider: str, model: str, *, native_only=False) -> Simp
     if row is None:
         native_model = model
         prefix, sep, rest = native_model.partition('/')
-        if sep and prefix in {'opencode', 'opencode-go', 'opencodex', 'google-antigravity', 'thehive'}:
+        if sep and prefix in {'opencode', 'opencode-go', 'opencodex', 'google-antigravity',
+                              'aistudio', 'thehive'}:
             native_model = rest
         native_model = native_model.removesuffix(':free')
-        owners = {'openai', 'anthropic', 'zai', 'stepfun', 'meta', 'deepseek'}
+        owners = {'openai', 'anthropic', 'google', 'zai', 'stepfun', 'meta', 'deepseek'}
         prefix, sep, rest = native_model.partition('/')
         if sep:
             prefix = {'zai-org': 'zai', 'deepseek-ai': 'deepseek'}.get(prefix, prefix)

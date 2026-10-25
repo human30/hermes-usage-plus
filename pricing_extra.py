@@ -15,6 +15,7 @@ SOURCES = {
     'deepseek': 'https://api-docs.deepseek.com/quick_start/pricing/',
     'opencode': 'https://opencode.ai/v2/docs/console/models/',
     'thehive': 'https://thehive.ai/pricing',
+    'google': 'https://ai.google.dev/gemini-api/docs/pricing',
 }
 RATE_FIELDS = ('input_cost_per_million', 'output_cost_per_million',
                'cache_read_cost_per_million', 'cache_write_cost_per_million')
@@ -30,6 +31,35 @@ HIVE_MODEL_IDS = {
     'Z.AI GLM-5.3-Flash': 'zai-org/glm-5.3-flash',
 }
 ROUTE_ALIASES = {}  # No official evidence of cross-version Hive equivalence.
+
+# Google publishes one section per Gemini model. Only text-first sections with a
+# Standard USD/1M-token table are mapped; media/audio/TTS/Live/embedding sections
+# and their per-image/per-second or per-minute rates are deliberately excluded.
+GOOGLE_MODEL_SECTIONS = {
+    'gemini-4-argon': 'gemini-4-argon',
+    'gemini-3.8-flash': 'gemini-3.8-flash',
+    'gemini-3.6-flash': 'gemini-3.6-flash',
+    'gemini-3.5-flash-lite': 'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
+    'gemini-3.1-pro-preview': 'gemini-3.1-pro-preview',
+    'gemini-3-flash-preview': 'gemini-3-flash-preview',
+    'gemini-2.5-pro': 'gemini-2.5-pro',
+    'gemini-2.5-flash': 'gemini-2.5-flash',
+    'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
+}
+GOOGLE_PAID_HEADER = 'Paid Tier, per 1M tokens in USD'
+GOOGLE_IMPLICIT_CACHE = ' Implicit caching only (explicit caching is not supported).'
+GOOGLE_STORAGE = re.compile(
+    r' \$[0-9]+(?:\.[0-9]+)? / 1,000,000 tokens per hour \(storage price\)'
+    r'(?: (?:through|starting) [A-Z][a-z]+ [0-9]{1,2}, [0-9]{4}\.)?')
+GOOGLE_SCHEDULE = re.compile(
+    r'\$([0-9]+(?:\.[0-9]+)?) through ([A-Z][a-z]+ [0-9]{1,2}, [0-9]{4})\. '
+    r'\$([0-9]+(?:\.[0-9]+)?) starting ([A-Z][a-z]+ [0-9]{1,2}, [0-9]{4})\.')
+GOOGLE_TIER = re.compile(
+    r'\$([0-9]+(?:\.[0-9]+)?), prompts <= ([1-9][0-9]{0,5})k tokens '
+    r'\$([0-9]+(?:\.[0-9]+)?), prompts > ([1-9][0-9]{0,5})k(?: tokens)?')
+GOOGLE_SEGMENT = re.compile(r'\$([0-9]+(?:\.[0-9]+)?)(?: \(([a-z][a-z /]*)\))?')
+GOOGLE_MODALITIES = {'text', 'image', 'video', 'audio'}
 
 
 def _clean(text):
@@ -74,6 +104,8 @@ class _Document(HTMLParser):
         self.paragraphs = []
         self.hive_labels = set()
         self.nodes = 0
+        self.section_h2 = self.section_h3 = None
+        self.anchors = []
 
     def check(self):
         if self.deadline is not None and time.monotonic() >= self.deadline:
@@ -92,11 +124,16 @@ class _Document(HTMLParser):
             self.paragraph = []
         if tag in ('h1', 'h2', 'h3'):
             self.section_start = len(self.text)
+        if tag == 'h2':
+            self.section_h2 = attrs.get('id')
+        elif tag == 'h3':
+            self.section_h3 = attrs.get('id')
         if tag == 'table':
             if self.table is not None:
                 raise ValueError('nested_table')
             self.table = []
             self.table_intros.append(_clean(' '.join(self.text[self.section_start:])))
+            self.anchors.append((self.section_h2, self.section_h3))
         elif tag == 'tr' and self.table is not None:
             self.row = []
         elif tag in ('td', 'th') and self.row is not None:
@@ -301,6 +338,134 @@ def _hive(document, checked_at):
     return list(found.values()), {'model_count': len(found), 'skipped_count': 0}
 
 
+GOOGLE_RATE_FIELDS = {'input': 'input_cost_per_million', 'output': 'output_cost_per_million',
+                      'cache_read': 'cache_read_cost_per_million'}
+
+
+def _google_text_rate(text):
+    """Select the one text-token rate; neighbouring modality rows are never borrowed."""
+    rates, position, count = [], 0, 0
+    while position < len(text):
+        match = GOOGLE_SEGMENT.match(text, position)
+        if not match:
+            raise ValueError('unknown_price_condition')
+        count += 1
+        if count > 4:
+            raise ValueError('unknown_price_condition')
+        modalities = match.group(2)
+        names = modalities.split(' / ') if modalities else None
+        if names is not None and not set(names) <= GOOGLE_MODALITIES:
+            raise ValueError('unknown_price_condition')
+        rates.append((names is None or 'text' in names, _price('$' + match.group(1))))
+        position = match.end()
+        if position < len(text):
+            if text[position] != ' ':
+                raise ValueError('unknown_price_condition')
+            position += 1
+    if not rates or sum(1 for text_segment, _ in rates if text_segment) != 1 or not rates[0][0]:
+        raise ValueError('no_text_rate')
+    return rates[0][1]
+
+
+def _google_value(text, checked_at):
+    """Standard-tier cell: plain, modality-scoped, context-tiered or date-scheduled."""
+    text = _clean(GOOGLE_STORAGE.sub('', text))
+    if text.endswith(GOOGLE_IMPLICIT_CACHE):
+        text = text[:-len(GOOGLE_IMPLICIT_CACHE)]
+    text = _clean(text)
+    today = datetime.fromtimestamp(checked_at, timezone.utc).date()
+    schedule = GOOGLE_SCHEDULE.fullmatch(text)
+    if schedule:
+        until = datetime.strptime(schedule.group(2), '%B %d, %Y').date()
+        start = datetime.strptime(schedule.group(4), '%B %d, %Y').date()
+        if (start - until).days != 1:
+            raise ValueError('inconsistent_schedule')
+        if today > until:
+            return {'rate': _price('$' + schedule.group(3)), 'above': None, 'threshold': None,
+                    'until': None, 'next': None, 'start': None}
+        return {'rate': _price('$' + schedule.group(1)), 'above': None, 'threshold': None,
+                'until': until.isoformat(), 'next': _price('$' + schedule.group(3)),
+                'start': start.isoformat()}
+    tier = GOOGLE_TIER.fullmatch(text)
+    if tier:
+        if tier.group(2) != tier.group(4):
+            raise ValueError('inconsistent_tier')
+        return {'rate': _price('$' + tier.group(1)), 'above': _price('$' + tier.group(3)),
+                'threshold': int(tier.group(2)) * 1000, 'until': None, 'next': None, 'start': None}
+    return {'rate': _google_text_rate(text), 'above': None, 'threshold': None,
+            'until': None, 'next': None, 'start': None}
+
+
+def _google_row(anchor, data, checked_at):
+    if (not data or len(data[0]) != 3 or data[0][:2] != ['', 'Free Tier']
+            or data[0][2] != GOOGLE_PAID_HEADER):
+        raise ValueError('unverified_units')
+    values = {}
+    for cells in data[1:]:
+        if len(cells) != 3:
+            raise ValueError('changed_columns')
+        label = cells[0]
+        if label.startswith('Input price'):
+            key = 'input'
+        elif label.startswith('Output price'):
+            key = 'output'
+        elif label == 'Context caching price':
+            key = 'cache_read'
+        else:
+            continue
+        if key in values:
+            raise ValueError('duplicate_price_row')
+        values[key] = _google_value(cells[2], checked_at)
+    if 'input' not in values or 'output' not in values:
+        raise ValueError('missing_text_rates')
+    thresholds = {value['threshold'] for value in values.values() if value['threshold']}
+    if len(thresholds) > 1:
+        raise ValueError('inconsistent_tier')
+    untils = {value['until'] for value in values.values()}
+    if len(untils - {None}) > 1 or (len(untils) > 1 and None in untils):
+        raise ValueError('inconsistent_schedule')
+    until = next(iter(untils - {None}), None)
+    threshold = next(iter(thresholds), None)
+    row = _row('google', GOOGLE_MODEL_SECTIONS[anchor], checked_at,
+               'Google Gemini API Standard tier USD/1M token reference; output includes thinking tokens; '
+               'implicit context cache read only; cache storage, media, tool charges and '
+               'Batch/Flex/Priority/Contributor tiers excluded; not billed')
+    for key, field in GOOGLE_RATE_FIELDS.items():
+        if key in values:
+            row[field] = values[key]['rate']
+    row['tier_threshold_tokens'] = threshold
+    if threshold:
+        row['above_threshold_rates'] = {GOOGLE_RATE_FIELDS[key]: value['above']
+                                        for key, value in values.items() if value['above']}
+        row['source'] += f'; base per-request prompt tier <= {threshold} tokens, never aggregate usage'
+    if until:
+        row['current_until'] = until
+        row['next_rates'] = {GOOGLE_RATE_FIELDS[key]: value['next']
+                             for key, value in values.items() if value['next']}
+        row['next_rate_from'] = next(value['start'] for value in values.values() if value['start'])
+        row['source'] += '; published rate change recorded as current_until/next_rates, not extrapolated'
+    return row
+
+
+def _google(document, checked_at):
+    if len(document.tables) != len(document.anchors):
+        raise ValueError('incomplete_document')
+    rows, seen = [], set()
+    for index, table in enumerate(document.tables):
+        document.check()
+        anchor, heading = document.anchors[index]
+        if anchor not in GOOGLE_MODEL_SECTIONS or not (heading or '').startswith('standard'):
+            continue
+        if anchor in seen:
+            raise ValueError('duplicate_model_section')
+        seen.add(anchor)
+        rows.append(_google_row(anchor, _grid(table, document), checked_at))
+    if not rows:
+        raise ValueError('no_supported_prices')
+    missing = len(GOOGLE_MODEL_SECTIONS) - len(rows)
+    return rows, {'model_count': len(rows) + missing, 'skipped_count': missing}
+
+
 def parse(name, payload, checked_at, deadline=None):
     """Return (rows, coverage), matching pricing_catalog._parse's row schema."""
     if name not in SOURCES:
@@ -323,6 +488,7 @@ def parse(name, payload, checked_at, deadline=None):
     document.check()
     if document.table is not None or document.cell is not None or document.paragraph is not None or document.heading is not None:
         raise ValueError('incomplete_document')
-    result = {'deepseek': _deepseek, 'opencode': _opencode, 'thehive': _hive}[name](document, checked_at)
+    result = {'deepseek': _deepseek, 'opencode': _opencode, 'thehive': _hive,
+              'google': _google}[name](document, checked_at)
     document.check()
     return result
