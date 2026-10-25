@@ -160,7 +160,8 @@ test('both surfaces preserve known zero versus unknown money and label partial A
 test('both surfaces show daily official price freshness and source failures', async () => {
   for (const surface of ['desktop', 'dashboard']) {
     const s = summary();
-    s.pricing = { price_count: 10, stale: true, sources: { official: { status: 'error', checked_at: 1700000000, count: 10, stale: true } } };
+    s.pricing = { price_count: 10, stale: true, notice: '가격표는 매일 자동 갱신합니다. 단가 미확인 모델은 환산 합계에서 제외합니다.',
+      sources: { official: { status: 'error', checked_at: 1700000000, count: 10, stale: true } } };
     const fetcher = async p => p.includes('/summary') ? s : accounts();
     const d = surface === 'desktop' ? loadDesktop(fetcher) : loadDashboard(fetcher);
     const ui = await mount(d.Page, surface === 'desktop');
@@ -169,6 +170,14 @@ test('both surfaces show daily official price freshness and source failures', as
       assert.match(text(ui), /마지막 정상 단가 유지/);
       assert.match(text(ui), /official/);
       assert.match(text(ui), /가격 오래됨/);
+      assert.match(text(ui), /가격표는 매일 자동 갱신합니다/);
+      const body = text(ui);
+      assert.ok(body.indexOf('모델별 사용량') < body.indexOf('공식 가격 자동 갱신'),
+        'price refresh notice must follow the model table');
+      assert.ok(body.indexOf('공식 가격 자동 갱신') > body.indexOf('가격 적용'),
+        'price refresh notice must not precede the summary metrics');
+      assert.equal(ui.container.querySelectorAll('.usage-plus-section')[ui.container.querySelectorAll('.usage-plus-section').length - 1].getAttribute('aria-label'), '공식 가격 자동 갱신');
+      assert.doesNotMatch(body, /가격표는 매일 자동 갱신[\s\S]*가격표는 매일 자동 갱신/);
     } finally { await ui.close(); }
   }
 });

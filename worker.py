@@ -9,6 +9,8 @@ import time
 from functools import partial
 from pathlib import Path
 
+PRICING_NOTICE = '가격표는 매일 자동 갱신합니다. 단가 미확인 모델은 환산 합계에서 제외합니다.'
+
 
 def _bind(home):
     from hermes_constants import set_hermes_home_override
@@ -26,6 +28,7 @@ def summary(home, days):
         lookup = catalog.lookup_price
         native_lookup = partial(catalog.lookup_price, native_only=True)
         pricing = catalog.status()
+        pricing['notice'] = PRICING_NOTICE
     except ImportError:
         lookup = reference_price
         pricing = {'status':'unavailable', 'reason':'가격 자동 갱신 모듈이 없습니다.'}
@@ -41,7 +44,6 @@ def summary(home, days):
     except Exception:
         result['warnings'].append('토큰 속도 측정 기록을 읽을 수 없습니다.')
     result['warnings'].append('속도는 설치 후 수집한 output tokens / 전체 API 요청 시간입니다. 첫 토큰 대기를 포함하며 순수 decode 속도가 아닙니다.')
-    result['warnings'].append('가격표는 매일 자동 갱신합니다. 단가 미확인 모델은 환산 합계에서 제외합니다.')
     return result
 
 
@@ -74,9 +76,10 @@ def main():
     if args.kind=='accounts': return accounts(home)
     from pricing_catalog import refresh_prices, status
     if args.kind=='prices':
-        value=refresh_prices(home)
-        return {'status':'ok','fetched_at':time.time(),'pricing':status(home)}
-    return {'status':'ok','fetched_at':time.time(),'pricing':status(home)}
+        refresh_prices(home)
+    current=status(home)
+    current['notice']=PRICING_NOTICE
+    return {'status':'ok','fetched_at':time.time(),'pricing':current}
 
 
 if __name__=='__main__':

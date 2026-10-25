@@ -131,7 +131,8 @@ function PricingStatus({ data }) {
     h('h2', null, '공식 가격 자동 갱신'),
     h('p', null, `일일 갱신 · 저장 가격 ${number(data.price_count)}개 · ${data.stale ? '가격 오래됨 / 미확인' : '가격 최신'}`),
     ...Object.entries(data.sources || {}).map(([name, info]) => h('p', { key: name, className: info.status !== 'ok' || info.stale ? 'usage-plus-warning' : 'usage-plus-muted' },
-      `${name}: ${info.status === 'ok' ? '정상' : '갱신 실패 — 마지막 정상 단가 유지'} · ${number(info.count)}개 · 마지막 정상 확인 ${date(info.checked_at)}${info.stale ? ' · 가격 오래됨' : ''}`)));
+      `${name}: ${info.status === 'ok' ? '정상' : '갱신 실패 — 마지막 정상 단가 유지'} · ${number(info.count)}개 · 마지막 정상 확인 ${date(info.checked_at)}${info.stale ? ' · 가격 오래됨' : ''}`)),
+    data.notice ? h('p', { className: 'usage-plus-muted' }, String(data.notice)) : null);
 }
 function UsageView({ days, setDays, summary, accounts, refresh }) {
   const t = summary.data?.totals;
@@ -145,7 +146,8 @@ function UsageView({ days, setDays, summary, accounts, refresh }) {
     t ? h('div', { className: 'usage-plus-grid usage-plus-metrics' },
       h('article', { className: 'usage-plus-metric' }, h('h2', null, 'API 호출'), h('strong', null, number(t.api_calls)), h('p', null, `입력 (캐시 제외) ${number(t.input_tokens)} · 출력 ${number(t.output_tokens)}`), h('p', null, `prompt ${number(t.prompt_tokens)} · 캐시 읽기 ${number(t.cache_read_tokens)}`)),
       h('article', { className: 'usage-plus-metric' }, h('h2', null, `API 환산 ${t.priced_models < t.models ? '부분 합계' : '합계'}`), h('strong', null, money(t.api_value_usd)), h('p', null, `가격 적용 ${number(t.priced_models)} / ${number(t.models)} 모델`), h('p', { className: 'usage-plus-muted' }, '가격 스냅샷 기준 API 환산액이며 실제 청구액이 아닙니다. 미확인 모델 비용은 합산하지 않습니다.'))) : null,
-    h(PricingStatus, { data: summary.data?.pricing }), h(AccountCards, { data: accounts.data }), h(ModelTable, { data: summary.data }));
+    h(AccountCards, { data: accounts.data }), h(ModelTable, { data: summary.data }),
+    h(PricingStatus, { data: summary.data?.pricing }));
 }
 
 // Each resource owns its generation, timer and in-flight request. A filter

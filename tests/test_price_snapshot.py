@@ -97,6 +97,19 @@ class PriceSnapshotTests(unittest.TestCase):
             self.assertAlmostEqual(result["totals"]["api_value_usd"], 4 * (10 * 2 + 5 * 9) / 1_000_000)
             self.assertEqual(read.call_count, 1, "one coherent catalog per summary, not per model")
 
+    def test_summary_reports_the_price_refresh_notice_with_the_pricing_block(self):
+        import worker
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            write_prices(home)
+            write_usage(home)
+            with patch("time.time", return_value=1000010):
+                result = worker.summary(home, 7)
+        self.assertEqual(result["pricing"]["notice"], worker.PRICING_NOTICE)
+        self.assertNotIn(worker.PRICING_NOTICE, result["warnings"])
+        self.assertEqual(result["warnings"][-1],
+                         '속도는 설치 후 수집한 output tokens / 전체 API 요청 시간입니다. 첫 토큰 대기를 포함하며 순수 decode 속도가 아닙니다.')
+
     def test_refresh_affects_new_snapshots_not_in_flight_requests(self):
         from decimal import Decimal
         import pricing_catalog as catalog
