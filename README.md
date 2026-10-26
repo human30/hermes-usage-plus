@@ -80,7 +80,7 @@ Get-ScheduledTaskInfo -TaskName Hermes_UsagePlus_Prices
 - [OpenAI 공식 pricing](https://developers.openai.com/api/docs/pricing)
 - [Anthropic 공식 pricing](https://platform.claude.com/docs/en/about-claude/pricing)
 - [Z.ai 공식 pricing](https://docs.z.ai/guides/overview/pricing) — `glm-5.3-flash`
-- [StepFun 공식 pricing](https://platform.stepfun.ai/docs/en/guides/pricing/details) — `step-5-preview`
+- [StepFun 공식 pricing](https://platform.stepfun.ai/docs/en/guides/pricing/details) — Step 5 Preview, 3.7 Flash, 3.5 Flash/2603, 1o Turbo Vision
 - [Meta 공식 pricing](https://dev.meta.ai/docs/pricing-rate-limits) — Muse Spark 1.1/1.2/1.3 Standard, 1.2/1.3 Contributor, Muse Wonder 1.0
 - [DeepSeek 공식 pricing](https://api-docs.deepseek.com/quick_start/pricing/) — Flash/Pro의 PEAK 참고 단가
 - [OpenCode Console 공식 pricing](https://opencode.ai/v2/docs/console/models/) — OpenCode 경로 우선; Go는 Console API 참고액이며 구독 청구액 아님
@@ -93,6 +93,7 @@ Get-ScheduledTaskInfo -TaskName Hermes_UsagePlus_Prices
 
 - 7/30/90일은 **그 기간에 시작한 세션의 생애 누적값**입니다. 그 기간 중의 모든 소비량 또는 일별 청구 명세가 아닙니다. Hermes 외부 호출은 사용량 집계에 포함되지 않습니다.
 - 공식 가격은 현재의 기본 구간 참고 단가입니다. 과거 가격, long-context·Fast·Batch·지역 요율·도구 비용을 재구성하지 않습니다. cache TTL도 source의 명시된 기본 조건만 적용합니다.
+- 유료 경로는 해당 제공자의 공식 단가를 우선하며, 무료·가격 미공개 경로는 모델 원제공자의 공식 API 단가로 환산합니다. `900k` 같은 GPT context variant, Fast variant, Gemini effort variant는 정확히 게시된 별도 단가가 없으면 표준 모델 참고가를 사용합니다. 원래 모델명과 실제 청구액(무료 0 포함)은 변경하지 않습니다.
 - 미확인 모델은 환산 합계에서 제외하며 부분 합계로 표시합니다. 구독의 API 환산액은 실제 청구액이나 환급 가능한 금액이 아닙니다.
 - 속도는 첫 토큰 대기까지 포함하며 순수 decode 속도가 아닙니다. 속도는 provider/model 전체 표본 기준이며 billing mode별 측정이 아닙니다. 동일 provider/model의 여러 billing mode 행에서 같은 통계가 보일 수 있습니다.
 - 과거 캐시 0은 미보고일 수 있어 0%로 단정하지 않습니다. 과거 속도를 소급 생성하지 않습니다.

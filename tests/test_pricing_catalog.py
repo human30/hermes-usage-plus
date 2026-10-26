@@ -92,12 +92,131 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(health['error_sources'], 1)
         self.assertEqual(health['healthy_sources'], 1)
 
+    def test_standard_variant_reference_preserves_original_model_and_tariff(self):
+        p = self.module()
+        p.refresh_prices(self.home, sources={
+            'openai': openai_page([['gpt-example', 2, '.1', 10]])})
+        for name in ('gpt-example-900k', 'gpt-example--fast', 'gpt-example-900k--fast'):
+            with self.subTest(model=name):
+                entry = p.lookup_price(self.home, 'openai-codex', name)
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry.model, 'gpt-example')
+                self.assertEqual(entry.input_cost_per_million, Decimal('2'))
+                self.assertEqual(entry.pricing_basis, 'native_reference')
+                self.assertEqual(entry.requested_model, name)
+                self.assertIn('standard_variant', entry.reference_adjustments)
+        for name in ('gpt-example-unknown', 'gpt-example-2026-01-01', 'evil/gpt-example-900k'):
+            self.assertIsNone(p.lookup_price(self.home, 'custom', name))
+
+    def test_free_routes_use_owner_api_tariff_not_zero_reference(self):
+        p = self.module()
+        p.refresh_prices(self.home, sources={
+            'openai': openai_page([['gpt-example', 2, '.1', 10]]),
+            'nous': catalog([
+                model(name='openai/gpt-example:free', prompt='0', completion='0'),
+                model(name='openai/gpt-example', prompt='0', completion='0'),
+                model(name='vendor/no-owner:free', prompt='0', completion='0')])})
+        for name in ('openai/gpt-example:free', 'openai/gpt-example'):
+            entry = p.lookup_price(self.home, 'nous', name)
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry.provider, 'openai')
+            self.assertEqual(entry.input_cost_per_million, Decimal('2'))
+            self.assertEqual(entry.pricing_basis, 'native_reference')
+            self.assertIn('free_route', entry.reference_adjustments)
+        self.assertIsNone(p.lookup_price(self.home, 'nous', 'vendor/no-owner:free'))
+
+    def test_nested_transport_and_effort_variants_use_unique_owner_reference(self):
+        from test_pricing_extra import deepseek_page, google_page
+        p = self.module()
+        p.refresh_prices(self.home, sources={'deepseek': deepseek_page(),
+            'google': google_page(sections=[('gemini-3.8-flash', [
+                ('Input price', '$0.75'), ('Output price (including thinking tokens)', '$3.75'),
+                ('Context caching price', '$0.075')])])})
+        for provider, name, owner, reference in [
+            ('opencodex', 'infron/deepseek-deepseek-v4.1-flash:free', 'deepseek', 'deepseek-flash'),
+            ('custom', 'opencodex/infron/deepseek-deepseek-v4.1-flash:free', 'deepseek', 'deepseek-flash'),
+            ('antigravity-subscription-directsdk', 'gemini-3.8-flash-low', 'google', 'gemini-3.8-flash'),
+            ('custom', 'google-antigravity/gemini-3.8-flash-high', 'google', 'gemini-3.8-flash')]:
+            with self.subTest(model=name):
+                entry = p.lookup_price(self.home, provider, name)
+                self.assertIsNotNone(entry)
+                self.assertEqual((entry.provider, entry.model), (owner, reference))
+                self.assertEqual(entry.pricing_basis, 'native_reference')
+        for name in ('evil/deepseek-deepseek-v4.1-flash:free',
+                     'infron/deepseek-deepseek-v4.1-flash-9999:free',
+                     'anthropic/gemini-3.8-flash-low', 'gemini-3.8-flash-lite'):
+            self.assertIsNone(p.lookup_price(self.home, 'custom', name))
+
+    def test_published_variant_tariff_wins_before_standard_reference(self):
+        p = self.module()
+        p.refresh_prices(self.home, sources={
+            'openai':openai_page([['gpt-example',2,'.1',10], ['gpt-example-900k',4,'.2',20]]),
+            'nous':catalog([model(name='openai/gpt-example--fast', prompt='0.000007', completion='0.000021')])})
+        exact = p.lookup_price(self.home, 'openai-codex', 'gpt-example-900k')
+        self.assertEqual(exact.input_cost_per_million, Decimal('4'))
+        self.assertEqual(exact.reference_adjustments, [])
+        route = p.lookup_price(self.home, 'nous', 'openai/gpt-example--fast')
+        self.assertEqual(route.input_cost_per_million, Decimal('7'))
+        self.assertEqual(route.pricing_basis, 'route')
+        self.assertEqual(route.reference_adjustments, [])
+        owner = p.lookup_price(self.home, 'nous', 'openai/gpt-example--fast', native_only=True)
+        self.assertEqual(owner.input_cost_per_million, Decimal('2'))
+        self.assertEqual(owner.reference_adjustments, ['standard_variant'])
+
+    def test_zero_input_with_paid_request_charge_is_not_a_free_tariff(self):
+        p = self.module()
+        p.refresh_prices(self.home,sources={
+            'openai':openai_page([['gpt-example',2,'.1',10]]),
+            'nous':catalog([model(name='openai/gpt-example',prompt='0',completion='0',request='0.5')])})
+        entry=p.lookup_price(self.home,'nous','openai/gpt-example')
+        self.assertEqual(entry.pricing_basis,'route')
+        self.assertEqual(entry.request_cost,Decimal('0.5'))
+        self.assertEqual(entry.reference_adjustments,[])
+
+    def test_paid_published_tariff_wins_over_misleading_free_suffix(self):
+        p = self.module()
+        p.refresh_prices(self.home, sources={
+            'openai': openai_page([['gpt-example',2,'.1',10]]),
+            'nous': catalog([
+                model(name='openai/gpt-example:free',prompt='0.000001',completion='0.000003'),
+                model(name='vendor/unpublished-free',prompt='0.000004',completion='0.000009')])})
+        for name, rate in [('openai/gpt-example:free','1'), ('vendor/unpublished-free','4')]:
+            with self.subTest(model=name):
+                entry=p.lookup_price(self.home,'nous',name)
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry.provider,'nous')
+                self.assertEqual(entry.input_cost_per_million,Decimal(rate))
+                self.assertEqual(entry.pricing_basis,'route')
+                self.assertEqual(entry.reference_adjustments,[])
+
+    def test_gpt_effort_and_context_variants_use_closest_published_reference(self):
+        p = self.module()
+        p.refresh_prices(self.home,sources={'openai':openai_page([
+            ['gpt-example',2,'.1',10], ['gpt-published-900k',4,'.2',20]])})
+        for name, reference, rate in [
+            ('gpt-example-high','gpt-example','2'),
+            ('gpt-example-low','gpt-example','2'),
+            ('gpt-example-900k-low','gpt-example','2'),
+            ('gpt-example-high-900k','gpt-example','2'),
+            ('gpt-example-900k-high--fast','gpt-example','2'),
+            ('gpt-published-900k-high','gpt-published-900k','4')]:
+            with self.subTest(model=name):
+                entry=p.lookup_price(self.home,'openai-codex',name)
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry.model,reference)
+                self.assertEqual(entry.input_cost_per_million,Decimal(rate))
+                self.assertEqual(entry.requested_model,name)
+                self.assertIn('standard_variant',entry.reference_adjustments)
+        for name in ('gpt-example-2026-01-01-high','gpt-example-nextgen-high',
+                     'gpt-example-mini-high','gpt-example-pro-high'):
+            self.assertIsNone(p.lookup_price(self.home,'custom',name))
+
     def test_native_reference_fallback_preserves_route_priority_and_exact_identity(self):
         p = self.module()
         p.refresh_prices(self.home, sources={
             'openai': openai_page([['gpt-example', 2, '.1', 10]]),
             'anthropic': anthropic_page(),
-            'nous': catalog([model(name='openai/gpt-example', prompt='0', completion='0')]),
+            'nous': catalog([model(name='openai/gpt-example', prompt='0.000001', completion='0.000003')]),
         })
         for provider, name in [('custom', 'gpt-example'), ('', 'openai/gpt-example'),
                                ('infron', 'openai/gpt-example:free'),
@@ -110,7 +229,7 @@ class CatalogTests(unittest.TestCase):
                 self.assertIn(price.source_url, (p.SOURCES['openai'], p.SOURCES['anthropic']))
         direct = p.lookup_price(self.home, 'nous', 'openai/gpt-example')
         assert direct is not None
-        self.assertEqual(direct.input_cost_per_million, Decimal(0))
+        self.assertEqual(direct.input_cost_per_million, Decimal(1))
         self.assertEqual(direct.pricing_basis, 'route')
         for name in ['gpt-example-unknown', 'anthropic/gpt-example', 'evil/gpt-example']:
             self.assertIsNone(p.lookup_price(self.home, 'custom', name))
@@ -126,7 +245,7 @@ class CatalogTests(unittest.TestCase):
                 ('opencode', 'opencode/paid-exact.1', 'opencode', '1.23', 'route'),
                 ('opencode-go', 'paid-exact.1', 'opencode', '1.23', 'provider_reference'),
                 ('opencodex', 'opencode-go/paid-exact.1', 'opencode', '1.23', 'provider_reference'),
-                ('opencode', 'free-exact', 'opencode', '0', 'route'),
+                # Free routes without an identifiable owner stay unpriced (asserted below).
                 ('thehive', 'deepseek-ai/deepseek-v4.1-flash-1017', 'thehive', '1.25', 'route'),
                 ('custom', 'deepseek-ai/deepseek-v4.1-flash-1017', 'deepseek', '2', 'native_reference'),
                 ('infron', 'deepseek/deepseek-v4.1-flash:free', 'deepseek', '2', 'native_reference'),
@@ -142,6 +261,7 @@ class CatalogTests(unittest.TestCase):
         for provider, model_id in [('custom','paid-exact.1'), ('opencodex','paid-exact.1'),
                 ('custom','deepseek-v4.1-flash-9999'), ('custom','deepseek-v4.2-flash')]:
             self.assertIsNone(p.lookup_price(self.home, provider, model_id))
+        self.assertIsNone(p.lookup_price(self.home, 'opencode', 'free-exact'))
         native = p.lookup_price(self.home, 'thehive', 'deepseek-ai/deepseek-v4.1-flash-1017', native_only=True)
         assert native is not None
         self.assertEqual(native.provider, 'deepseek')
@@ -235,10 +355,35 @@ class CatalogTests(unittest.TestCase):
                 self.assertEqual(failed['sources'][source]['status'], 'error')
                 self.assertEqual(p.lookup_price(self.home, 'custom', model_id).input_cost_per_million, Decimal(input_rate))
         self.assertIsNone(p.lookup_price(self.home,'custom','glm-5.3-flashx'))
-        self.assertIsNone(p.lookup_price(self.home,'custom','step-5-preview-free'))
+        self.assertIsNotNone(p.lookup_price(self.home,'custom','step-5-preview-free'))
         self.assertIsNone(p.lookup_price(self.home,'custom','muse-spark-1.3'))
         self.assertIsNotNone(p.lookup_price(self.home,'custom','zai-org/glm-5.3-flash'))
         self.assertIsNotNone(p.lookup_price(self.home,'custom','stepfun/step-5-preview:free'))
+
+    def test_stepfun_collects_each_published_text_model_for_free_references(self):
+        from test_pricing_extra import table
+        p = self.module()
+        payload = table(['Model','Billing unit','Input (cache miss)','Input (cache hit)','Output'], [
+            ['step-5-preview','1M tokens','$3','$0.3','$7'],
+            ['step-3.7-flash','1M tokens','$0.2','$0.04','$1.15'],
+            ['step-3.5-flash','1M tokens','$0.1','$0.02','$0.3'],
+            ['step-3.5-flash-2603','1M tokens','$0.1','$0.02','$0.3'],
+            ['step-1o-turbo-vision','1M tokens','$0.36','$0.07','$1.15']]) + (
+            '<p>For step-5-preview, the cache-miss input price includes writing new content to the cache.</p>')
+        result = p.refresh_prices(self.home, sources={'stepfun': payload})
+        self.assertEqual(result['sources']['stepfun']['count'], 5)
+        for provider, name, rate, write in [
+            ('nous','stepfun/step-3.7-flash:free','0.2',None),
+            ('opencode-go','step-5-preview-free','3',Decimal('3')),
+            ('custom','step-3.5-flash-2603','0.1',None)]:
+            entry = p.lookup_price(self.home, provider, name)
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry.provider, 'stepfun')
+            self.assertEqual(entry.input_cost_per_million, Decimal(rate))
+            self.assertEqual(entry.cache_write_cost_per_million, write)
+        broken = p.refresh_prices(self.home, sources={'stepfun': payload.replace('1M tokens','1K tokens')})
+        self.assertEqual(broken['sources']['stepfun']['status'], 'error')
+        self.assertEqual(broken['sources']['stepfun']['count'], 5)
 
     def test_stepfun_write_semantics_require_affirmative_exact_model_statement(self):
         p = self.module()
@@ -471,7 +616,7 @@ class CatalogTests(unittest.TestCase):
         from unittest.mock import patch
         p = self.module()
         self.assertTrue(hasattr(p, '_fetch_sources'), 'bounded public fetch transport missing')
-        payloads = {'nous': catalog([model(prompt='0', completion='0')]),
+        payloads = {'nous': catalog([model(prompt='0.000001', completion='0.000003')]),
                     'openrouter': catalog([model(prompt='0.000002', completion='0.000003')]),
                     'openai': openai_page([['gpt-example', 2, '.1', 10]]),
                     'anthropic': anthropic_page()}

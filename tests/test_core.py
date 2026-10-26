@@ -9,6 +9,31 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 class SummaryTests(unittest.TestCase):
+    def test_standard_reference_metadata_keeps_billed_zero_and_original_model(self):
+        from contextlib import closing
+        from test_price_snapshot import write_usage
+        from test_pricing_catalog import openai_page
+        from usage_core import build_summary
+        import pricing_catalog as prices
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            write_usage(home)
+            with closing(sqlite3.connect(home/'state.db')) as db, db:
+                db.execute("UPDATE session_model_usage SET model='gpt-example-900k', billing_provider='openai-codex', actual_cost_usd=0, estimated_cost_usd=0, cost_status='actual'")
+            before = (home/'state.db').read_bytes()
+            prices.refresh_prices(home, sources={'openai':openai_page([['gpt-example',2,'.1',10]])})
+            snapshot=prices.PriceSnapshot(home)
+            result=build_summary(home, 7, now=1000010, price_lookup=snapshot.lookup_price)
+            row=result['models'][0]
+            self.assertEqual(row['model'], 'gpt-example-900k')
+            self.assertEqual(row['provider'], 'openai-codex')
+            self.assertEqual(row['actual_cost_usd'], 0)
+            self.assertEqual(row['estimated_cost_usd'], 0)
+            self.assertEqual(row['pricing_model'], 'gpt-example')
+            self.assertEqual(row.get('pricing_reference_adjustments'), ['standard_variant'])
+            self.assertGreater(row['api_value_usd'], 0)
+            self.assertEqual(before, (home/'state.db').read_bytes())
+
     def test_cost_sum_requires_every_corresponding_cost_with_accepted_status(self):
         from usage_core import build_summary
         with tempfile.TemporaryDirectory() as tmp:

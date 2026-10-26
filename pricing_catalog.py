@@ -491,10 +491,13 @@ def _parse_native_table(name, document, checked_at):
                 column = 2 if model.endswith('-contributor') else 1
                 found.append((model, [values[k][column] for k in ('Input','Cached input','Output')]))
         else:
-            label = 'GLM-5.3-Flash' if name == 'zai' else 'step-5-preview'
+            labels = {'GLM-5.3-Flash'} if name == 'zai' else {
+                'step-5-preview', 'step-3.7-flash', 'step-3.5-flash',
+                'step-3.5-flash-2603', 'step-1o-turbo-vision'}
             for r in cells[1:]:
-                if not r or r[0] != label:
+                if not r or r[0] not in labels:
                     continue
+                label = r[0]
                 if len(r) != 5 or (name == 'stepfun' and r[1] != '1M tokens'):
                     raise ValueError('changed_native_rows')
                 if name == 'zai':
@@ -507,7 +510,7 @@ def _parse_native_table(name, document, checked_at):
                         raise ValueError('unverified_currency_or_units')
                 found.append(('glm-5.3-flash' if name == 'zai' else label,
                               [r[1],r[2],r[4]] if name == 'zai' else r[2:5]))
-    if not found or (name != 'meta' and len(found) != 1) or len({m for m, _ in found}) != len(found):
+    if not found or (name == 'zai' and len(found) != 1) or len({m for m, _ in found}) != len(found):
         raise ValueError('missing_or_ambiguous_native_table')
     rows = []
     for model, cells in found:
@@ -523,8 +526,7 @@ def _parse_native_table(name, document, checked_at):
                           if model.endswith('-contributor') else '; Standard mode')
         row = _row(name, model, checked_at, condition)
         row.update(input_cost_per_million=rates[0], cache_read_cost_per_million=rates[1], output_cost_per_million=rates[2])
-        if name == 'stepfun':
-            # Match affirmative prose, not a generic phrase borrowed from another model.
+        if name == 'stepfun' and model == 'step-5-preview':
             if not any(re.match(
                     r'For step-5-preview\s*, the cache-miss input price includes '
                     r'writing new content to the cache\.(?=\s|$)', paragraph)
@@ -634,12 +636,74 @@ def lookup_price(home: Path, provider: str, model: str, *, native_only=False) ->
     return _lookup_price(_read(home)['prices'], provider, model, native_only=native_only)
 
 
-def _lookup_price(rows, provider: str, model: str, *, native_only=False) -> SimpleNamespace | None:
-    """Exact route first, then the model owner's official cached API reference.
+def _native_ids(row):
+    identifiers = {row['model']}
+    if row['provider'] == 'deepseek':
+        version = row.get('model_version', '')
+        if version:
+            identifiers.add(version.lower())
+        if row['model'] == 'deepseek-flash' and re.fullmatch(r'DeepSeek-V4\.1-Flash(?:-\d{4})?', version):
+            identifiers.add('deepseek-v4.1-flash')
+    return identifiers
 
-    Only explicit namespaces/transport wrappers are removed. Never trim dates,
-    context/effort suffixes, or infer one maker's tariff from a reseller catalog.
-    The requested provider/model and actual billed cost are never rewritten.
+
+def _native_reference(rows, model):
+    owners = {'openai', 'anthropic', 'google', 'zai', 'stepfun', 'meta', 'deepseek'}
+    wrappers = {'opencode', 'opencode-go', 'opencodex', 'google-antigravity',
+                'aistudio', 'thehive', 'infron'}
+    namespaces = {'zai-org': 'zai', 'deepseek-ai': 'deepseek'}
+    name = model
+    for _ in range(4):
+        prefix, sep, rest = name.partition('/')
+        if not sep or prefix not in wrappers:
+            break
+        name = rest
+    name = name.removesuffix(':free').removesuffix('-free')
+    prefix, sep, rest = name.partition('/')
+    if sep:
+        owner = namespaces.get(prefix, prefix)
+        if owner not in owners:
+            return None, []
+        owners, name = {owner}, rest
+    candidates = [r for r in rows if r['provider'] in owners]
+    matches = [r for r in candidates if name in _native_ids(r)]
+    if not matches and not sep and model != name:
+        # Known transports encode maker/model as maker-model. Match a unique,
+        # complete native ID/version; do not trim a dated snapshot or generation.
+        matches = [r for r in candidates if any(
+            name == namespace + '-' + identifier
+            for namespace in ({r['provider']} | {k for k, v in namespaces.items() if v == r['provider']})
+            for identifier in _native_ids(r))]
+    adjustments = []
+    if not matches:
+        standard = name
+        effort = r'(?:minimal|none|low|medium|high|xhigh|max|ultra)'
+        if name.startswith('gpt-'):
+            suffix = r'(?:--?fast|-[1-9][0-9]*(?:k|m)|-' + effort + r')$'
+            family = 'openai'
+        elif name.startswith('gemini-'):
+            suffix, family = '-' + effort + '$', 'google'
+        else:
+            suffix, family = r'(?!)', None
+        for _ in range(3):
+            candidate = re.sub(suffix, '', standard)
+            if candidate == standard:
+                break
+            standard = candidate
+            matches = [r for r in candidates if r['provider'] == family and r['model'] == standard]
+            if matches:
+                if len(matches) == 1:
+                    adjustments.append('standard_variant')
+                break
+    return (matches[0], adjustments) if len(matches) == 1 else (None, [])
+
+
+def _lookup_price(rows, provider: str, model: str, *, native_only=False) -> SimpleNamespace | None:
+    """Published paid route first, then the model owner's official API reference.
+
+    Free routes use owner API reference values, never zero as a savings proxy.
+    Known transport encodings and bounded standard-variant rules affect reference
+    lookup only; original provider/model IDs and billed costs remain unchanged.
     """
     requested = provider
     route_model = model
@@ -659,43 +723,40 @@ def _lookup_price(rows, provider: str, model: str, *, native_only=False) -> Simp
                    and r['model'].replace('/', '-') == route_model]
         if len(encoded) == 1:
             direct = encoded[0]
-    row = None if native_only else direct
+    adjustments = []
+    zero_route = (direct is not None and direct['input_cost_per_million'] is not None
+                  and direct['output_cost_per_million'] is not None
+                  and all(direct.get(f) is None or Decimal(direct[f]) == 0
+                          for f in (*RATE_FIELDS, 'request_cost')))
+    paid_route = direct is not None and any(direct.get(f) is not None and Decimal(direct[f]) > 0
+                                             for f in (*RATE_FIELDS, 'request_cost'))
+    free_route = zero_route or (model.endswith((':free', '-free')) and not paid_route)
+    if free_route:
+        adjustments.append('free_route')
+    row = None if native_only or free_route else direct
     basis = 'native_reference' if requested == 'openai-codex' or native_only else 'route'
     if row is not None and reference_route:
         basis = 'provider_reference'
     if row is None:
-        native_model = model
-        prefix, sep, rest = native_model.partition('/')
-        if sep and prefix in {'opencode', 'opencode-go', 'opencodex', 'google-antigravity',
-                              'aistudio', 'thehive'}:
-            native_model = rest
-        native_model = native_model.removesuffix(':free')
-        owners = {'openai', 'anthropic', 'google', 'zai', 'stepfun', 'meta', 'deepseek'}
-        prefix, sep, rest = native_model.partition('/')
-        if sep:
-            prefix = {'zai-org': 'zai', 'deepseek-ai': 'deepseek'}.get(prefix, prefix)
-            if prefix not in owners:
-                return None
-            owners = {prefix}
-            native_model = rest
-        matches = [r for r in rows if r['provider'] in owners and (r['model'] == native_model
-                   or (r['provider'] == 'deepseek' and native_model == r.get('model_version', '').lower())
-                   or (r['provider'] == 'deepseek' and r['model'] == 'deepseek-flash'
-                       and native_model == 'deepseek-v4.1-flash'
-                       and re.fullmatch(r'DeepSeek-V4\.1-Flash(?:-\d{4})?', r.get('model_version', ''))))]
-        if len(matches) != 1:
+        row, native_adjustments = _native_reference(rows, model)
+        if row is None:
             return None
-        row = matches[0]
+        adjustments.extend(native_adjustments)
         basis = 'native_reference'
     entry = dict(row)
     for field in (*RATE_FIELDS, 'request_cost'):
         entry[field] = Decimal(entry[field]) if entry[field] is not None else None
-    entry.update(pricing_basis=basis, source_url=SOURCES[row['source_id']])
+    entry.update(pricing_basis=basis, source_url=SOURCES[row['source_id']],
+                 requested_model=model, reference_adjustments=adjustments)
+    if 'standard_variant' in adjustments:
+        entry['source'] += ' | standard model API reference; variant-specific billing not reproduced'
+    if 'free_route' in adjustments:
+        entry['source'] += ' | free route valued at model-owner API tariff, not free-route billing'
     if basis == 'provider_reference':
         entry['source'] += ' | OpenCode Console API equivalent reference, not Go subscription billing'
     if basis == 'native_reference':
         entry['source'] += ' | model-owner official API equivalent reference, not billed'
-        if row['provider'] == 'deepseek' and native_model == 'deepseek-v4.1-flash':
+        if row['provider'] == 'deepseek' and model.removesuffix(':free').removesuffix('-free').endswith('deepseek-v4.1-flash'):
             entry['source'] += '; undated V4.1-Flash generation reference uses the currently published MODEL VERSION, not a historical invoice'
     return SimpleNamespace(**entry)
 

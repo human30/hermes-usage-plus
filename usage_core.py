@@ -94,6 +94,7 @@ def build_summary(home: Path, days: int = 30, *, now=None, price_lookup=None, na
         row['cache_hit_pct'] = row['cache_read_tokens'] / row['prompt_tokens'] * 100 if observed and row['prompt_tokens'] else None
         row.update(api_value_usd=None, pricing_source=None, pricing_version=None,
                    pricing_source_url=None, pricing_basis=None, pricing_provider=None, pricing_model=None,
+                   pricing_reference_adjustments=[],
                    avg_tps=None, avg_latency_s=None, timing_samples=0)
         entry = lookup(row['provider'], row['model'])
         row['api_value_usd'] = api_value(row, entry)
@@ -109,6 +110,7 @@ def build_summary(home: Path, days: int = 30, *, now=None, price_lookup=None, na
             row['pricing_basis'] = getattr(entry, 'pricing_basis', 'route')
             row['pricing_provider'] = getattr(entry, 'provider', None)
             row['pricing_model'] = getattr(entry, 'model', None)
+            row['pricing_reference_adjustments'] = list(getattr(entry, 'reference_adjustments', []))
     totals: dict[str, Any] = {key: sum(m[key] for m in models) for key in ('api_calls', 'input_tokens', 'output_tokens', 'prompt_tokens', 'cache_read_tokens')}
     priced = [m['api_value_usd'] for m in models if m['api_value_usd'] is not None]
     totals.update(api_value_usd=sum(priced) if priced else None, priced_models=len(priced), models=len(models))
