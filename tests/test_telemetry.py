@@ -23,8 +23,8 @@ class TelemetryTests(unittest.TestCase):
             payload.update(api_request_id='r2', api_duration=8.0, usage={'output_tokens':100})
             save_record(home, make_record(payload))
             con=sqlite3.connect(home/'state.db')
-            con.execute('CREATE TABLE sessions(id TEXT, started_at REAL)')
-            con.execute("INSERT INTO sessions VALUES('s',1000)"); con.commit(); con.close()
+            con.execute('CREATE TABLE sessions(id TEXT, started_at REAL, model TEXT)')
+            con.execute("INSERT INTO sessions VALUES('s',1000,'m')"); con.commit(); con.close()
             result = read_timing(home, 999)[('p','m')]
             self.assertEqual(result['timing_samples'], 2)
             self.assertEqual(result['timing_scope'], 'provider_model')

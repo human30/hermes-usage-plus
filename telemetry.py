@@ -60,10 +60,10 @@ def read_timing(home: Path, cutoff):
         con.execute('PRAGMA query_only=ON')
         deadline = time.monotonic()+2
         con.set_progress_handler(lambda: int(time.monotonic()>deadline), 10000)
-        rows = con.execute('''SELECT provider,model,COUNT(*) AS timing_samples,
-            SUM(output_tokens)/SUM(duration) AS avg_tps,AVG(duration) AS avg_latency_s
+        rows = con.execute('''SELECT t.provider,t.model,COUNT(*) AS timing_samples,
+            SUM(t.output_tokens)/SUM(t.duration) AS avg_tps,AVG(t.duration) AS avg_latency_s
             FROM timing t JOIN history.sessions s ON s.id=t.session_id
-            WHERE s.started_at>=? GROUP BY provider,model''', (cutoff,)).fetchall()
+            WHERE s.started_at>=? GROUP BY t.provider,t.model''', (cutoff,)).fetchall()
         return {(r['provider'],r['model']):dict(r, timing_scope='provider_model') for r in rows}
 
 
