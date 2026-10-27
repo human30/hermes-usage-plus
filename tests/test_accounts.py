@@ -35,4 +35,18 @@ class AccountsTests(unittest.TestCase):
         self.assertNotIn('SECRET', str(out))
         self.assertEqual(out['accounts'][1]['status'], 'unsupported')
 
+    def test_fetch_antigravity_pool(self):
+        import accounts
+        res = accounts.fetch_one('antigravity-oauth')
+        self.assertEqual(res['provider'], 'antigravity-oauth')
+        self.assertEqual(res['status'], 'ok')
+        windows = res.get('windows') or []
+        self.assertTrue(len(windows) >= 2, 'should have at least Gemini and Claude windows')
+        labels = [str(w.get('label')) for w in windows if isinstance(w, dict)]
+        self.assertTrue(any('Gemini 5시간 한도' in l for l in labels))
+        self.assertTrue(any('Claude 5시간 한도' in l for l in labels))
+        details = res.get('details') or []
+        self.assertTrue(len(details) >= 1)
+
+
 if __name__ == '__main__': unittest.main()
