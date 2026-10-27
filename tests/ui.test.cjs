@@ -176,7 +176,10 @@ test('both surfaces show daily official price freshness and source failures', as
         'price refresh notice must follow the model table');
       assert.ok(body.indexOf('공식 가격 자동 갱신') > body.indexOf('가격 적용'),
         'price refresh notice must not precede the summary metrics');
-      assert.equal(ui.container.querySelectorAll('.usage-plus-section')[ui.container.querySelectorAll('.usage-plus-section').length - 1].getAttribute('aria-label'), '공식 가격 자동 갱신');
+      const sections = [...ui.container.querySelectorAll('.usage-plus-section')];
+      assert.equal(sections[sections.length - 2].getAttribute('aria-label'), '공식 가격 자동 갱신');
+      assert.equal(sections[sections.length - 1].getAttribute('aria-label'), '안내 및 참고사항',
+        'caveats and reading notes live in the last section');
       assert.doesNotMatch(body, /가격표는 매일 자동 갱신[\s\S]*가격표는 매일 자동 갱신/);
     } finally { await ui.close(); }
   }
