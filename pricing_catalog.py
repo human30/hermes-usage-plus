@@ -100,7 +100,11 @@ def _fetch_sources(deadline):
     One bulk request per source (plus at most 3 same-host redirects), no retries.
     All sources start together. No worker may survive this function.
     """
+    from concurrent.futures import ThreadPoolExecutor
+    import contextlib
+
     workers, results = {}, {}
+    worker_deadline = min(deadline, time.monotonic() + SOURCE_PROCESS_SECONDS)
     try:
         for name in SOURCES:
             if time.monotonic() >= deadline:
@@ -113,29 +117,35 @@ def _fetch_sources(deadline):
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             except OSError:
                 results[name] = _SourceError('transport_error')
-        for name, worker in workers.items():
+
+        def _collect(item):
+            name, worker = item
             try:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired('official_fetch', 0)
-                payload, _ = worker.communicate(timeout=min(SOURCE_PROCESS_SECONDS, remaining))
+                remaining = max(0.05, worker_deadline - time.monotonic())
+                payload, _ = worker.communicate(timeout=remaining)
                 if worker.returncode:
-                    results[name] = _SourceError('transport_error')
-                elif len(payload) > MAX_RESPONSE_BYTES:
-                    results[name] = _SourceError('response_too_large')
-                else:
-                    results[name] = payload
+                    return name, _SourceError('transport_error')
+                if len(payload) > MAX_RESPONSE_BYTES:
+                    return name, _SourceError('response_too_large')
+                return name, payload
             except subprocess.TimeoutExpired:
                 worker.kill()
-                worker.communicate(timeout=1)
-                results[name] = _SourceError('timeout')
+                with contextlib.suppress(Exception):
+                    worker.communicate(timeout=1)
+                return name, _SourceError('timeout')
             except OSError:
-                results[name] = _SourceError('transport_error')
+                return name, _SourceError('transport_error')
+
+        if workers:
+            with ThreadPoolExecutor(max_workers=len(workers)) as pool:
+                for name, res in pool.map(_collect, workers.items()):
+                    results[name] = res
     finally:
         for worker in workers.values():
             if worker.poll() is None:
                 worker.kill()
-                worker.communicate(timeout=1)
+                with contextlib.suppress(Exception):
+                    worker.communicate(timeout=1)
     return results
 
 

@@ -39,7 +39,8 @@ def save_record(home: Path, record):
         return
     folder = home / 'cache' / 'usage-plus'
     folder.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(folder / 'metrics.db', timeout=.05)) as con:
+    with closing(sqlite3.connect(folder / 'metrics.db', timeout=5.0)) as con:
+        con.execute('PRAGMA journal_mode=WAL')
         con.execute('''CREATE TABLE IF NOT EXISTS timing(
             session_id TEXT, request_id TEXT, provider TEXT, model TEXT,
             started_at REAL, duration REAL, output_tokens INTEGER,
@@ -52,19 +53,23 @@ def save_record(home: Path, record):
 
 def read_timing(home: Path, cutoff):
     path = home / 'cache' / 'usage-plus' / 'metrics.db'
-    if not path.exists():
+    state_path = home / 'state.db'
+    if not path.exists() or not state_path.is_file():
         return {}
-    with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=.1)) as con:
+    with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1.0)) as con:
         con.row_factory = sqlite3.Row
-        con.execute('ATTACH DATABASE ? AS history', ((home/'state.db').resolve().as_uri()+'?mode=ro',))
+        try:
+            con.execute('ATTACH DATABASE ? AS history', (state_path.resolve().as_uri() + '?mode=ro',))
+        except sqlite3.OperationalError:
+            return {}
         con.execute('PRAGMA query_only=ON')
-        deadline = time.monotonic()+2
-        con.set_progress_handler(lambda: int(time.monotonic()>deadline), 10000)
+        deadline = time.monotonic() + 2
+        con.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         rows = con.execute('''SELECT t.provider,t.model,COUNT(*) AS timing_samples,
             SUM(t.output_tokens)/SUM(t.duration) AS avg_tps,AVG(t.duration) AS avg_latency_s
             FROM timing t JOIN history.sessions s ON s.id=t.session_id
             WHERE s.started_at>=? GROUP BY t.provider,t.model''', (cutoff,)).fetchall()
-        return {(r['provider'],r['model']):dict(r, timing_scope='provider_model') for r in rows}
+        return {(r['provider'], r['model']): dict(r, timing_scope='provider_model') for r in rows}
 
 
 def _drain():

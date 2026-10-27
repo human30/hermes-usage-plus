@@ -35,6 +35,17 @@ class TelemetryTests(unittest.TestCase):
             self.assertIsNone(make_record(dict(payload, usage=None)))
             self.assertNotIn(b'PRIVATE', (home/'cache'/'usage-plus'/'metrics.db').read_bytes())
 
+    def test_read_timing_graceful_without_state_db(self):
+        from telemetry import make_record, save_record, read_timing
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            payload = dict(api_request_id='r1', session_id='s', model='m', provider='p',
+                api_duration=2.0, started_at=1000, usage={'output_tokens':100})
+            save_record(home, make_record(payload))
+            # No state.db exists in home
+            res = read_timing(home, 999)
+            self.assertEqual(res, {})
+
     def test_plugin_registers_only_observer_hooks(self):
         self.assertTrue((ROOT/'__init__.py').exists(), 'plugin entry missing')
         spec=importlib.util.spec_from_file_location('usage_plus_test',ROOT/'__init__.py',submodule_search_locations=[str(ROOT)])

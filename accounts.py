@@ -8,8 +8,11 @@ import time
 from typing import Any
 
 
+ANTIGRAVITY_ALIASES = {'antigravity-oauth', 'antigravity-pool', 'google-antigravity'}
+
+
 def fetch_one(provider):
-    if provider in {'antigravity-oauth', 'antigravity-pool', 'google-antigravity'}:
+    if provider in ANTIGRAVITY_ALIASES:
         return fetch_antigravity_pool()
     from agent.account_usage import fetch_account_usage, build_nous_credits_snapshot, _fetch_portal_account
     if provider == 'nous':
@@ -138,8 +141,13 @@ def fetch_antigravity_pool() -> dict[str, Any]:
                     detail='Gemini Argon WTU',
                 ))
 
+    if current and '@' in current:
+        c_local, _, c_dom = current.partition('@')
+        cur_masked = f'{c_local}@{c_dom[:2]}***'
+    else:
+        cur_masked = current or "미지정"
     details = [
-        f'활성 계정: {current or "미지정"} (풀 총 {len(queue)}개 계정 가용)',
+        safe_text(f'활성 계정: {cur_masked} (풀 총 {len(queue)}개 계정 가용)'),
     ]
     for email in queue:
         is_act = (email == current)
@@ -154,13 +162,16 @@ def fetch_antigravity_pool() -> dict[str, Any]:
         g_str = f'{(g_rem * 100):.1f}%' if g_rem is not None else '미확인'
         c_str = f'{(c_rem * 100):.1f}%' if c_rem is not None else '미확인'
         act_tag = ' [Active]' if is_act else ''
-        # Keep prefix before @ or masked domain so user can identify account without triggering email redaction regex
-        masked_id = email.split('@')[0] if '@' in email else email
-        details.append(f'{masked_id} ({email}){act_tag} · Gemini {g_str} · Claude {c_str}')
+        if '@' in email:
+            local_part, _, domain_part = email.partition('@')
+            masked_id = f'{local_part}@{domain_part[:2]}***'
+        else:
+            masked_id = email
+        details.append(safe_text(f'{masked_id}{act_tag} · Gemini {g_str} · Claude {c_str}'))
 
     interval_min = q.get('intervalMinutes')
     if interval_min is not None:
-        details.append(f'동기화 주기: {interval_min}분 (Jitter 적용) · 60분±30분 (30~90분 간격)')
+        details.append(safe_text(f'동기화 주기: {interval_min}분 (Jitter 적용) · 60분±30분 (30~90분 간격)'))
 
     last_scan = q.get('lastAttemptAt')
     fetched_epoch = time.time()
@@ -187,7 +198,8 @@ def collect_accounts(providers, *, fetch=None, budget=22) -> dict[str, Any]:
     from concurrent.futures import ThreadPoolExecutor, wait
     import contextvars
     fetch = fetch or fetch_one
-    names = sorted(set(str(p) for p in providers if p))[:64]
+    normalized = {('antigravity-oauth' if str(p) in ANTIGRAVITY_ALIASES else str(p)) for p in providers if p}
+    names = sorted(normalized)[:64]
     executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix='usage-account')
     futures = {executor.submit(contextvars.copy_context().run, fetch, name): name for name in names}
     done, pending = wait(futures, timeout=budget)
@@ -226,7 +238,7 @@ def snapshot_view(provider, snapshot):
     if snapshot is None:
         return unavailable(provider)
     if snapshot.unavailable_reason:
-        return unavailable(provider)
+        return unavailable(provider, reason=safe_text(snapshot.unavailable_reason))
     windows = []
     for item in snapshot.windows:
         used = item.used_percent
@@ -235,7 +247,9 @@ def snapshot_view(provider, snapshot):
             remaining_percent=max(0, min(100, 100-used)) if used is not None else None,
             reset_at=item.reset_at.isoformat() if item.reset_at else None,
             scope=item.scope, detail=safe_text(item.detail) or None))
-    return dict(provider=provider, status='ok' if windows or snapshot.details else 'unavailable',
+    has_data = bool(windows or snapshot.details)
+    return dict(provider=provider, status='ok' if has_data else 'unavailable',
         source=safe_text(snapshot.source), fetched_at=snapshot.fetched_at.timestamp(),
         plan=safe_text(snapshot.plan) or None, windows=windows,
-        details=[safe_text(v) for v in snapshot.details], reason=None)
+        details=[safe_text(d) for d in snapshot.details],
+        reason=None if has_data else unavailable(provider)['reason'])

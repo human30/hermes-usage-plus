@@ -86,9 +86,13 @@ def run_child(command, *, timeout: float=30, env=None, scratch=None):
     if not scratch:
         from hermes_constants import get_hermes_home
         scratch = str(get_hermes_home() / 'cache' / 'scratch')
-    Path(scratch).mkdir(parents=True, exist_ok=True)
+    spool_dir = scratch
     try:
-        with tempfile.TemporaryFile(dir=scratch) as output:
+        Path(scratch).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        spool_dir = None
+    try:
+        with tempfile.TemporaryFile(dir=spool_dir) as output:
             proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
                 stderr=subprocess.DEVNULL, env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             try:

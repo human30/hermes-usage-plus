@@ -79,8 +79,14 @@ def build_summary(home: Path, days: int = 30, *, now=None, price_lookup=None, na
         GROUP BY u.model,u.billing_provider,u.billing_mode
         ORDER BY SUM(u.input_tokens+u.cache_read_tokens+u.cache_write_tokens+u.output_tokens) DESC
         LIMIT 1000'''
-    with closing(open_readonly(home / 'state.db')) as con:
-        models = [dict(row) for row in con.execute(sql, (cutoff,))]
+    db_path = home / 'state.db'
+    models = []
+    if db_path.is_file():
+        try:
+            with closing(open_readonly(db_path)) as con:
+                models = [dict(row) for row in con.execute(sql, (cutoff,))]
+        except sqlite3.OperationalError:
+            models = []
     warnings = ['선택 기간에 시작한 세션의 누적값입니다. 날짜별 실제 소비량이 아니며 Hermes 외부 사용은 제외됩니다.',
                 'API 환산액은 실제 청구액이 아닙니다. 캐시 필드가 없는 과거 기록은 0%로 단정하지 않습니다.']
     warnings.append('API 환산액: 공식 가격표의 기본 구간 단가 기준. long-context·fast/batch 요율과 과거 가격 변경은 반영하지 않은 참고 추정액입니다.')
